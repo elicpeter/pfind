@@ -1,27 +1,45 @@
 #!/usr/bin/env python3
 """
-Advanced benchmark suite for pfind performance testing.
+pfind benchmark suite — baseline edition.
 
-Tests the C implementation of pfind against find, fd, and Python alternatives.
+Goals:
+  * Reproducible datasets (seeded).
+  * Accurate timing via hyperfine when available; fallback to in-process timer.
+  * Sweep pfind's own knobs (threads, backend, traversal order) so future
+    optimizations produce comparable curves.
+  * Honest scenario tagging: filter scenarios are marked [walker-only] until
+    process.rs actually filters.
+  * Compare against fd / find / rg / os.walk.
+  * Capture system + tool versions for paper appendix.
+  * Emit stdout summary + JSON + Markdown report.
+
+Usage:
+    python3 benchmark.py --build --sizes small medium --output bench.json
+    python3 benchmark.py --quick                  # tiny dataset, smoke test
+    python3 benchmark.py --sweeps threads backend # pfind-internal sweeps
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
+import platform
 import random
+import shlex
 import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
 
 # ============================================================================
-# Configuration
+# Dataset configs
 # ============================================================================
 
 @dataclass
@@ -36,541 +54,666 @@ class DatasetConfig:
         return self.num_dirs * self.files_per_dir
 
 
-DATASET_SIZES = {
-    "tiny":   DatasetConfig("tiny",   10,    100),       # 1K files
-    "small":  DatasetConfig("small",  100,   100),       # 10K files
-    "medium": DatasetConfig("medium", 100,   1000),      # 100K files
-    "large":  DatasetConfig("large",  1000,  1000),      # 1M files
-    "deep":   DatasetConfig("deep",   100,   100, depth=5),  # 10K, nested
+DATASET_SIZES: dict[str, DatasetConfig] = {
+    "tiny":   DatasetConfig("tiny",   10,    100),                  # 1K
+    "small":  DatasetConfig("small",  100,   100),                  # 10K
+    "medium": DatasetConfig("medium", 100,   1000),                 # 100K
+    "large":  DatasetConfig("large",  1000,  1000),                 # 1M
+    "deep":   DatasetConfig("deep",   100,   100, depth=5),         # nested
+    "wide":   DatasetConfig("wide",   2000,  50),                   # very flat
 }
 
 EXTENSIONS = ["jpg", "png", "txt", "json", "py", "bin"]
 EXTENSION_WEIGHTS = [0.4, 0.3, 0.1, 0.1, 0.05, 0.05]
 
 
+# ============================================================================
+# Result types
+# ============================================================================
+
 @dataclass
 class BenchmarkResult:
-    tool: str
-    scenario: str
-    dataset: str
-    runs: list = field(default_factory=list)
+    tool: str                       # "pfind", "fd", "find", "rg", "os.walk"
+    variant: str                    # tool-specific variant tag (e.g. "stack-bf-j8")
+    scenario: str                   # "all_files", "extension_jpg", ...
+    dataset: str                    # dataset name
+    runs: list[float] = field(default_factory=list)
     files_found: int = 0
+    timer: str = "perf_counter"     # "hyperfine" or "perf_counter"
+    note: str = ""                  # e.g. "[walker-only]"
 
     @property
-    def mean(self) -> float:
-        return statistics.mean(self.runs) if self.runs else 0
-
+    def mean(self) -> float: return statistics.mean(self.runs) if self.runs else 0.0
     @property
-    def stddev(self) -> float:
-        return statistics.stdev(self.runs) if len(self.runs) > 1 else 0
-
+    def stddev(self) -> float: return statistics.stdev(self.runs) if len(self.runs) > 1 else 0.0
     @property
-    def min(self) -> float:
-        return min(self.runs) if self.runs else 0
-
+    def min(self) -> float: return min(self.runs) if self.runs else 0.0
     @property
-    def max(self) -> float:
-        return max(self.runs) if self.runs else 0
-
+    def max(self) -> float: return max(self.runs) if self.runs else 0.0
     @property
-    def files_per_sec(self) -> float:
-        return self.files_found / self.mean if self.mean > 0 else 0
+    def files_per_sec(self) -> float: return self.files_found / self.mean if self.mean > 0 else 0.0
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["mean"] = self.mean
+        d["stddev"] = self.stddev
+        d["min"] = self.min
+        d["max"] = self.max
+        d["files_per_sec"] = self.files_per_sec
+        return d
 
 
 # ============================================================================
-# Dataset Generation
+# Dataset generation
 # ============================================================================
 
 def create_dataset(root: Path, config: DatasetConfig, verbose: bool = True) -> dict:
-    """Create a test dataset with realistic file distribution."""
     if verbose:
-        print(f"  Creating {config.name} dataset: {config.total_files:,} files...")
+        print(f"  Generating {config.name}: target ~{config.total_files:,} files...")
 
     start = time.time()
     extension_counts = {ext: 0 for ext in EXTENSIONS}
-    file_count = 0
+    file_count = [0]
 
-    random.seed(42)
+    rnd = random.Random(42)
 
-    def create_files_in_dir(dir_path: Path, num_files: int):
-        nonlocal file_count
+    def make_files(dir_path: Path, n: int) -> None:
         dir_path.mkdir(parents=True, exist_ok=True)
-
-        for j in range(num_files):
-            ext = random.choices(EXTENSIONS, weights=EXTENSION_WEIGHTS)[0]
-            file_name = f"file_{j:06d}.{ext}"
-            file_path = dir_path / file_name
-            file_path.write_bytes(b"x" * 100)
+        for j in range(n):
+            ext = rnd.choices(EXTENSIONS, weights=EXTENSION_WEIGHTS)[0]
+            (dir_path / f"file_{j:06d}.{ext}").write_bytes(b"x" * 100)
             extension_counts[ext] += 1
-            file_count += 1
+            file_count[0] += 1
 
     if config.depth == 1:
-        # Flat structure
         for i in range(config.num_dirs):
-            dir_path = root / f"dir_{i:04d}"
-            create_files_in_dir(dir_path, config.files_per_dir)
+            make_files(root / f"dir_{i:04d}", config.files_per_dir)
     else:
-        # Nested structure
-        dirs_per_level = config.num_dirs // config.depth
+        dirs_per_level = max(1, config.num_dirs // config.depth)
+        files_per_level = max(1, config.files_per_dir // config.depth)
 
-        def create_level(base: Path, level: int):
+        def recurse(base: Path, level: int) -> None:
             if level >= config.depth:
                 return
-
             for i in range(dirs_per_level):
-                dir_path = base / f"level{level}_dir{i:04d}"
-                create_files_in_dir(dir_path, config.files_per_dir // config.depth)
-                create_level(dir_path, level + 1)
+                d = base / f"L{level}_d{i:04d}"
+                make_files(d, files_per_level)
+                recurse(d, level + 1)
 
-        create_level(root, 0)
+        recurse(root, 0)
 
     elapsed = time.time() - start
-
     stats = {
-        "total_files": file_count,
+        "total_files": file_count[0],
         "extension_counts": extension_counts,
         "creation_time": elapsed,
     }
-
     if verbose:
         print(f"    Created {stats['total_files']:,} files in {elapsed:.2f}s")
-        ext_summary = ', '.join(f'{k}={v:,}' for k, v in extension_counts.items())
-        print(f"    Extensions: {ext_summary}")
-
     return stats
 
 
 # ============================================================================
-# Benchmark Runners
+# Tool detection
 # ============================================================================
 
 def check_tool(name: str, version_arg: str = "--version") -> Optional[str]:
-    """Check if tool exists and return version string."""
-    try:
-        result = subprocess.run(
-            [name, version_arg],
+    if shutil.which(name) is None:
+        return None
+    for arg in (version_arg, "-V", "-v"):
+        try:
+            r = subprocess.run([name, arg], capture_output=True, text=True, timeout=5)
+            out = (r.stdout or r.stderr or "").strip()
+            if out:
+                return out.split("\n")[0][:80]
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+    # Tool exists but no version output — still report presence.
+    return f"{name} (version unknown)"
+
+
+def have(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+# ============================================================================
+# Build pfind
+# ============================================================================
+
+def build_pfind(repo_root: Path, force: bool = False) -> Path:
+    target = repo_root / "target" / "release" / "pfind"
+    if force or not target.exists():
+        print("▶ cargo build --release ...")
+        r = subprocess.run(
+            ["cargo", "build", "--release"],
+            cwd=repo_root,
             capture_output=True,
             text=True,
-            timeout=5
         )
-        if result.returncode == 0:
-            version = result.stdout.strip().split('\n')[0]
-            return version[:60]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
+        if r.returncode != 0:
+            print(r.stdout)
+            print(r.stderr, file=sys.stderr)
+            sys.exit(f"cargo build failed (exit {r.returncode})")
+    if not target.exists():
+        sys.exit(f"build succeeded but binary missing at {target}")
+    return target
 
 
-def run_benchmark(
-        cmd: list,
-        warmup: int = 1,
-        runs: int = 5,
-        count_lines: bool = True,
-) -> tuple:
-    """Run a benchmark command multiple times."""
+# ============================================================================
+# Runners
+# ============================================================================
 
-    # Warmup
+def count_results(stdout: bytes) -> int:
+    """Count results from a tool's stdout.
+
+    Most tools print one match per line, so we just count newlines. But pfind
+    `-c` (and similar tools) print a single integer summary; detect that and
+    return the integer. A trailing newline is allowed.
+    """
+    if not stdout:
+        return 0
+    s = stdout.strip()
+    if s.isdigit():
+        try:
+            return int(s)
+        except ValueError:
+            pass
+    return stdout.count(b"\n")
+
+
+def run_with_hyperfine(
+        cmd: list[str],
+        warmup: int,
+        runs: int,
+) -> tuple[list[float], int]:
+    """Run command via hyperfine. Returns (per-run seconds, lines from one final run)."""
+    with tempfile.NamedTemporaryFile(mode="r", suffix=".json", delete=False) as f:
+        json_path = f.name
+    try:
+        # Hyperfine treats each `--` arg as a separate benchmark, so the
+        # full command must be passed as ONE string. `-N` disables shell
+        # wrapping; hyperfine then splits the string itself (shlex-style).
+        hf_cmd = [
+            "hyperfine",
+            "-N",
+            "--warmup", str(max(warmup, 0)),
+            "--runs", str(max(runs, 2)),
+            "--export-json", json_path,
+            "--",
+            shlex.join(cmd),
+        ]
+        r = subprocess.run(hf_cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            return [], 0
+        with open(json_path) as f:
+            data = json.load(f)
+        times = data["results"][0]["times"]
+
+        # Run once more to capture line count (hyperfine discards stdout).
+        out = subprocess.run(cmd, capture_output=True)
+        lines = count_results(out.stdout) if out.returncode == 0 else 0
+        return times, lines
+    finally:
+        try:
+            os.unlink(json_path)
+        except OSError:
+            pass
+
+
+def run_with_python_timer(
+        cmd: list[str],
+        warmup: int,
+        runs: int,
+) -> tuple[list[float], int]:
     for _ in range(warmup):
         subprocess.run(cmd, capture_output=True, check=False)
-
-    times = []
+    times: list[float] = []
     lines = 0
-
     for _ in range(runs):
         start = time.perf_counter()
-        result = subprocess.run(cmd, capture_output=True, check=False)
-        elapsed = time.perf_counter() - start
-        times.append(elapsed)
-
-        if count_lines and result.returncode == 0:
-            lines = result.stdout.count(b'\n')
-
+        r = subprocess.run(cmd, capture_output=True, check=False)
+        times.append(time.perf_counter() - start)
+        if r.returncode == 0:
+            lines = count_results(r.stdout)
     return times, lines
 
 
-def benchmark_oswalk(root: Path, extension: Optional[str] = None, runs: int = 5) -> tuple:
-    """Benchmark Python os.walk."""
+def run_cmd(
+        cmd: list[str],
+        warmup: int,
+        runs: int,
+        use_hyperfine: bool,
+) -> tuple[list[float], int, str]:
+    if use_hyperfine and have("hyperfine"):
+        times, lines = run_with_hyperfine(cmd, warmup, runs)
+        if times:
+            return times, lines, "hyperfine"
+    times, lines = run_with_python_timer(cmd, warmup, runs)
+    return times, lines, "perf_counter"
+
+
+def benchmark_oswalk(root: Path, ext: Optional[str], runs: int) -> tuple[list[float], int]:
+    # Warmup
+    for _ in os.walk(root):
+        pass
     times = []
     count = 0
-
-    # Warmup
-    for dirpath, _, filenames in os.walk(root):
-        for f in filenames:
-            if extension is None or f.endswith(f".{extension}"):
-                pass
-
     for _ in range(runs):
         start = time.perf_counter()
         count = 0
-        for dirpath, _, filenames in os.walk(root):
-            for f in filenames:
-                if extension is None or f.endswith(f".{extension}"):
-                    count += 1
-        elapsed = time.perf_counter() - start
-        times.append(elapsed)
-
-    return times, count
-
-
-def benchmark_pathlib(root: Path, pattern: str = "**/*", runs: int = 5) -> tuple:
-    """Benchmark pathlib.glob."""
-    times = []
-    count = 0
-
-    # Warmup
-    list(root.glob(pattern))
-
-    for _ in range(runs):
-        start = time.perf_counter()
-        files = list(root.glob(pattern))
-        count = len(files)
-        elapsed = time.perf_counter() - start
-        times.append(elapsed)
-
+        for _, _, files in os.walk(root):
+            if ext is None:
+                count += len(files)
+            else:
+                suf = f".{ext}"
+                count += sum(1 for f in files if f.endswith(suf))
+        times.append(time.perf_counter() - start)
     return times, count
 
 
 # ============================================================================
-# Test Scenarios
+# Scenarios
+# ============================================================================
+
+# Each scenario yields per-tool command builders.
+# pfind variant string captures backend/order/threads.
+
+WALKER_ONLY_NOTE = "[walker-only: filter not wired in process.rs yet]"
+
+
+def pfind_variants(pfind: Path, root: str, base_args: list[str], sweeps: set[str], max_threads: int) -> list[tuple[str, list[str]]]:
+    """Return list of (variant_label, cmd) for pfind based on enabled sweeps."""
+    variants: list[tuple[str, list[str]]] = []
+
+    def cmd(extra: list[str]) -> list[str]:
+        return [str(pfind), root, *base_args, *extra]
+
+    # Default (no sweep flags): single representative run.
+    variants.append(("default", cmd([])))
+
+    if "backend" in sweeps:
+        variants.append(("queue", cmd(["--queue"])))
+        variants.append(("stack", cmd(["--stack"])))
+
+    if "order" in sweeps:
+        variants.append(("breadth-first", cmd(["--breadth-first"])))
+        variants.append(("depth-first", cmd(["--depth-first"])))
+
+    if "threads" in sweeps:
+        thread_counts = sorted({1, 2, 4, 8, max_threads})
+        for j in thread_counts:
+            variants.append((f"j{j}", cmd(["-j", str(j)])))
+
+    return variants
+
+
+SCENARIOS = {
+    "all_files": {
+        "fair": True,
+        "pfind_args": [],
+        "fd": lambda root: ["fd", "-t", "f", ".", root],
+        "find": lambda root: ["find", root, "-type", "f"],
+        "rg": lambda root: ["rg", "--files", root],
+        "oswalk_ext": None,
+    },
+    "extension_jpg": {
+        "fair": True,
+        "pfind_args": ["-e", "jpg"],
+        "fd": lambda root: ["fd", "-e", "jpg", ".", root],
+        "find": lambda root: ["find", root, "-name", "*.jpg"],
+        "rg": lambda root: ["rg", "--files", "-g", "*.jpg", root],
+        "oswalk_ext": "jpg",
+    },
+    "extension_multi": {
+        "fair": True,
+        "pfind_args": ["-e", "jpg,png"],
+        "fd": lambda root: ["fd", "-e", "jpg", "-e", "png", ".", root],
+        "find": lambda root: ["find", root, "(", "-name", "*.jpg", "-o", "-name", "*.png", ")"],
+        "rg": lambda root: ["rg", "--files", "-g", "*.jpg", "-g", "*.png", root],
+        "oswalk_ext": None,
+    },
+    "name_glob": {
+        "fair": True,
+        "pfind_args": ["-n", "file_00*"],
+        "fd": lambda root: ["fd", "-g", "file_00*", root],
+        "find": lambda root: ["find", root, "-name", "file_00*"],
+        "rg": lambda root: ["rg", "--files", "-g", "file_00*", root],
+        "oswalk_ext": None,
+    },
+    "count_only": {
+        "fair": True,
+        "pfind_args": ["-c"],
+        "fd": lambda root: ["fd", "-t", "f", ".", root],     # no native count
+        "find": lambda root: ["find", root, "-type", "f"],
+        "rg": lambda root: ["rg", "--files", root],
+        "oswalk_ext": None,
+    },
+}
+
+
+# ============================================================================
+# Driver
 # ============================================================================
 
 def run_scenario(
-        name: str,
+        scenario: str,
+        spec: dict,
         root: Path,
-        dataset_config: DatasetConfig,
-        pfind_path: Path,
-        runs: int = 5,
-        warmup: int = 1,
-) -> list:
-    """Run a single test scenario across all tools."""
+        dataset: DatasetConfig,
+        pfind: Path,
+        runs: int,
+        warmup: int,
+        sweeps: set[str],
+        use_hyperfine: bool,
+        max_threads: int,
+        skip_oswalk: bool,
+) -> list[BenchmarkResult]:
+    out: list[BenchmarkResult] = []
+    root_s = str(root)
+    note = "" if spec["fair"] else WALKER_ONLY_NOTE
 
-    results = []
-    dataset_name = dataset_config.name
-    root_str = str(root)
+    # pfind variants
+    if pfind.exists():
+        for variant, cmd in pfind_variants(pfind, root_s, spec["pfind_args"], sweeps, max_threads):
+            times, lines, timer = run_cmd(cmd, warmup, runs, use_hyperfine)
+            out.append(BenchmarkResult(
+                tool="pfind", variant=variant, scenario=scenario,
+                dataset=dataset.name, runs=times, files_found=lines,
+                timer=timer, note=note,
+            ))
 
-    # Base pfind command (Rust/C++ style CLI):
-    #   pfind find [OPTIONS] [PATH...]
+    # External tools
+    for tool in ("fd", "find", "rg"):
+        if not have(tool):
+            continue
+        cmd = spec[tool](root_s)
+        times, lines, timer = run_cmd(cmd, warmup, runs, use_hyperfine)
+        out.append(BenchmarkResult(
+            tool=tool, variant="default", scenario=scenario,
+            dataset=dataset.name, runs=times, files_found=lines,
+            timer=timer, note="",
+        ))
 
-    # Define commands for each scenario
-    if name == "all_files":
-        cmds = {
-            # All regular files – no extra filters
-            "pfind": [str(pfind_path), root_str],
-            "find": ["find", root_str, "-type", "f"],
-            "fd": ["fd", "-t", "f", ".", root_str],
-        }
-        oswalk_ext = None
-        pathlib_pattern = "**/*"
+    # os.walk (skip on huge datasets unless explicitly enabled)
+    if not skip_oswalk and dataset.total_files <= 100_000:
+        times, count = benchmark_oswalk(root, spec["oswalk_ext"], runs)
+        out.append(BenchmarkResult(
+            tool="os.walk", variant="default", scenario=scenario,
+            dataset=dataset.name, runs=times, files_found=count,
+            timer="perf_counter", note="",
+        ))
 
-    elif name == "extension_jpg":
-        cmds = {
-            # Extensions in pfind: --extensions EXT1,EXT2,...
-            "pfind": [str(pfind_path), "--extensions", "jpg", root_str],
-            "find": ["find", root_str, "-name", "*.jpg"],
-            "fd": ["fd", "-e", "jpg", ".", root_str],
-        }
-        oswalk_ext = "jpg"
-        pathlib_pattern = "**/*.jpg"
-
-    elif name == "extension_multi":
-        cmds = {
-            # Multiple extensions: comma-separated
-            "pfind": [str(pfind_path), "--extensions", "jpg,png", root_str],
-            "find": ["find", root_str, "(", "-name", "*.jpg", "-o", "-name", "*.png", ")"],
-            "fd": ["fd", "-e", "jpg", "-e", "png", ".", root_str],
-        }
-        oswalk_ext = None
-        pathlib_pattern = None
-
-    elif name == "regex_pattern":
-        cmds = {
-            # Regex in pfind: -e / --expr. By default it matches the file name,
-            # which matches what fd does here.
-            "pfind": [str(pfind_path), "-e", r"file_00[0-9]{4}\.jpg", root_str],
-            "find": ["find", root_str, "-regex", r".*/file_00[0-9][0-9][0-9][0-9]\.jpg"],
-            "fd": ["fd", r"file_00[0-9]{4}\.jpg", root_str],
-        }
-        oswalk_ext = None
-        pathlib_pattern = None
-
-    elif name == "quiet_exists":
-        cmds = {
-            # Quiet existence check:
-            #   --extensions jpg     only jpg
-            #   --max-results 1      stop after first match
-            #   --quiet / -q         suppress path output (just like fd -q)
-            "pfind": [str(pfind_path), "--extensions", "jpg", "--max-results", "1", "--quiet", root_str ],
-            "find": ["find", root_str, "-name", "*.jpg", "-print", "-quit"],
-            "fd": ["fd", "-e", "jpg", "-q", ".", root_str],
-        }
-        oswalk_ext = None
-        pathlib_pattern = None
-
-    else:
-        return results
-
-    # os.walk benchmark
-    if oswalk_ext is not None or name == "all_files":
-        times, count = benchmark_oswalk(root, oswalk_ext, runs)
-        result = BenchmarkResult("os.walk", name, dataset_name)
-        result.runs = times
-        result.files_found = count
-        results.append(result)
-
-    # pathlib benchmark (skip for large datasets)
-    if pathlib_pattern and dataset_config.total_files <= 100_000:
-        times, count = benchmark_pathlib(root, pathlib_pattern, runs)
-        result = BenchmarkResult("pathlib", name, dataset_name)
-        result.runs = times
-        result.files_found = count
-        results.append(result)
-
-    # Command-line tools
-    for tool_name, cmd in cmds.items():
-        if tool_name == "pfind":
-            if not pfind_path.exists():
-                continue
-        elif tool_name == "fd":
-            if not check_tool("fd"):
-                continue
-        elif tool_name == "find":
-            pass
-
-        times, count = run_benchmark(cmd, warmup=warmup, runs=runs)
-        result = BenchmarkResult(tool_name, name, dataset_name)
-        result.runs = times
-        result.files_found = count
-        results.append(result)
-
-    return results
+    return out
 
 
 # ============================================================================
-# Output Formatting
+# Reporting
 # ============================================================================
 
-def format_time(seconds: float) -> str:
-    if seconds < 0.001:
-        return f"{seconds * 1_000_000:.0f}µs"
-    elif seconds < 1:
-        return f"{seconds * 1000:.1f}ms"
-    else:
-        return f"{seconds:.3f}s"
+def fmt_time(s: float) -> str:
+    if s < 1e-3: return f"{s * 1e6:.0f}µs"
+    if s < 1.0: return f"{s * 1e3:.1f}ms"
+    return f"{s:.3f}s"
 
 
-def format_rate(files_per_sec: float) -> str:
-    if files_per_sec >= 1_000_000:
-        return f"{files_per_sec / 1_000_000:.2f}M/s"
-    elif files_per_sec >= 1_000:
-        return f"{files_per_sec / 1_000:.1f}K/s"
-    else:
-        return f"{files_per_sec:.0f}/s"
+def fmt_rate(r: float) -> str:
+    if r >= 1e6: return f"{r/1e6:.2f}M/s"
+    if r >= 1e3: return f"{r/1e3:.1f}K/s"
+    return f"{r:.0f}/s"
 
 
-def print_comparison_matrix(all_results: list):
-    """Print a comparison matrix showing speedups."""
-    by_scenario = {}
-    for r in all_results:
+def print_scenario_block(results: list[BenchmarkResult]) -> None:
+    if not results:
+        return
+    fastest = min((r.mean for r in results if r.mean > 0), default=0.0)
+    for r in sorted(results, key=lambda x: x.mean if x.mean > 0 else float("inf")):
+        star = "★" if r.mean == fastest and r.mean > 0 else " "
+        label = f"{r.tool}/{r.variant}"
+        print(
+            f"    {star} {label:<26} {fmt_time(r.mean):>10} ± {fmt_time(r.stddev):<8} "
+            f"({r.files_found:>9,} files, {fmt_rate(r.files_per_sec):>10}) "
+            f"[{r.timer}] {r.note}"
+        )
+
+
+def print_correctness(results: list[BenchmarkResult]) -> None:
+    """Compare file counts vs fd baseline for fair scenarios."""
+    by_key: dict[tuple[str, str], list[BenchmarkResult]] = {}
+    for r in results:
+        by_key.setdefault((r.scenario, r.dataset), []).append(r)
+
+    print("\n" + "═" * 80)
+    print(" CORRECTNESS (file-count parity vs fd)")
+    print("═" * 80)
+    print(f"{'scenario':<18} {'dataset':<8} {'tool/variant':<28} {'count':>10} {'delta':>10}")
+    print("─" * 80)
+    for (scenario, dataset), rs in sorted(by_key.items()):
+        baseline = next((x.files_found for x in rs if x.tool == "fd"), None)
+        for r in rs:
+            delta = "—" if baseline is None else f"{r.files_found - baseline:+d}"
+            print(f"{scenario:<18} {dataset:<8} {r.tool + '/' + r.variant:<28} {r.files_found:>10,} {delta:>10}")
+
+
+def print_speedup_matrix(results: list[BenchmarkResult]) -> None:
+    by_scenario: dict[tuple[str, str], dict[str, BenchmarkResult]] = {}
+    for r in results:
         key = (r.scenario, r.dataset)
-        if key not in by_scenario:
-            by_scenario[key] = {}
-        by_scenario[key][r.tool] = r
+        by_scenario.setdefault(key, {})[f"{r.tool}/{r.variant}"] = r
 
-    all_tools = sorted(set(r.tool for r in all_results))
-
-    print(f"\n{'═' * 80}")
-    print(" SPEEDUP MATRIX (vs slowest tool)")
-    print(f"{'═' * 80}")
-
-    header = f"{'Scenario':<25}"
-    for tool in all_tools:
-        header += f" {tool:>10}"
+    all_tools = sorted({f"{r.tool}/{r.variant}" for r in results})
+    print("\n" + "═" * 80)
+    print(" SPEEDUP MATRIX (vs slowest in row)")
+    print("═" * 80)
+    header = f"{'scenario/dataset':<28}" + "".join(f" {t[:14]:>14}" for t in all_tools)
     print(header)
     print("─" * len(header))
 
     for (scenario, dataset), tools in sorted(by_scenario.items()):
-        if not tools:
-            continue
-
-        slowest = max(r.mean for r in tools.values() if r.mean > 0)
-
-        row = f"{scenario[:20]:<20} ({dataset:<3})"
-        for tool in all_tools:
-            if tool in tools and tools[tool].mean > 0:
-                speedup = slowest / tools[tool].mean
-                row += f" {speedup:>9.1f}x"
+        slowest = max((r.mean for r in tools.values() if r.mean > 0), default=0.0)
+        row = f"{(scenario + '/' + dataset)[:26]:<28}"
+        for t in all_tools:
+            r = tools.get(t)
+            if r and r.mean > 0:
+                row += f" {slowest / r.mean:>13.2f}x"
             else:
-                row += f" {'N/A':>10}"
+                row += f" {'—':>14}"
         print(row)
 
-    print()
+
+def write_markdown(path: Path, results: list[BenchmarkResult], meta: dict) -> None:
+    with open(path, "w") as f:
+        f.write("# pfind benchmark report\n\n")
+        f.write("## metadata\n\n")
+        for k, v in meta.items():
+            f.write(f"- **{k}**: `{v}`\n")
+        f.write("\n## results\n\n")
+        f.write("| scenario | dataset | tool | variant | mean | stddev | files | rate | timer | note |\n")
+        f.write("|---|---|---|---|---:|---:|---:|---:|---|---|\n")
+        for r in sorted(results, key=lambda x: (x.scenario, x.dataset, x.tool, x.variant)):
+            f.write(
+                f"| {r.scenario} | {r.dataset} | {r.tool} | {r.variant} "
+                f"| {fmt_time(r.mean)} | {fmt_time(r.stddev)} | {r.files_found:,} "
+                f"| {fmt_rate(r.files_per_sec)} | {r.timer} | {r.note} |\n"
+            )
 
 
-def print_summary(all_results: list):
-    """Print overall summary statistics."""
-    print(f"\n{'═' * 80}")
-    print(" SUMMARY")
-    print(f"{'═' * 80}")
+# ============================================================================
+# System info
+# ============================================================================
 
-    by_tool = {}
-    for r in all_results:
-        if r.tool not in by_tool:
-            by_tool[r.tool] = []
-        by_tool[r.tool].append(r)
+def gather_system_info(repo_root: Path) -> dict:
+    info: dict = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "python": sys.version.split()[0],
+        "cpu_count_logical": os.cpu_count(),
+    }
 
-    print("\nAverage performance by tool:")
-    print(f"{'Tool':<12} {'Avg Time':>12} {'Avg Rate':>15} {'Total Files':>15}")
-    print("─" * 55)
+    # CPU model
+    try:
+        if sys.platform == "darwin":
+            r = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
+            if r.returncode == 0:
+                info["cpu_model"] = r.stdout.strip()
+        elif sys.platform.startswith("linux"):
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        info["cpu_model"] = line.split(":", 1)[1].strip()
+                        break
+    except Exception:
+        pass
 
-    for tool in sorted(by_tool.keys()):
-        results = by_tool[tool]
-        avg_time = statistics.mean(r.mean for r in results)
-        total_files = sum(r.files_found for r in results)
-        total_time = sum(r.mean * len(r.runs) for r in results)
-        avg_rate = total_files / total_time if total_time > 0 else 0
+    # git rev
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            info["git_rev"] = r.stdout.strip()
+        r = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root, capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            info["git_dirty"] = bool(r.stdout.strip())
+    except Exception:
+        pass
 
-        print(f"{tool:<12} {format_time(avg_time):>12} {format_rate(avg_rate):>15} {total_files:>15,}")
+    # tool versions
+    info["versions"] = {
+        "pfind": "release-build",
+        "fd": check_tool("fd"),
+        "find": check_tool("find"),
+        "rg": check_tool("rg"),
+        "hyperfine": check_tool("hyperfine"),
+        "cargo": check_tool("cargo"),
+    }
+    return info
 
 
 # ============================================================================
 # Main
 # ============================================================================
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Advanced benchmark suite for pfind",
+def main() -> int:
+    p = argparse.ArgumentParser(
+        description="pfind benchmark suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    p.add_argument("--sizes", nargs="+", choices=list(DATASET_SIZES), default=["small", "medium"])
+    p.add_argument("--scenarios", nargs="+", choices=list(SCENARIOS), default=list(SCENARIOS))
+    p.add_argument("--sweeps", nargs="*", choices=["threads", "backend", "order"], default=[],
+                   help="pfind-internal sweeps to run (in addition to default)")
+    p.add_argument("--runs", type=int, default=5)
+    p.add_argument("--warmup", type=int, default=1)
+    p.add_argument("--pfind", type=Path, help="path to pfind binary; default: cargo build target")
+    p.add_argument("--build", action="store_true", help="cargo build --release before benchmarking")
+    p.add_argument("--rebuild", action="store_true", help="force rebuild even if binary exists")
+    p.add_argument("--no-hyperfine", action="store_true", help="never use hyperfine even if installed")
+    p.add_argument("--skip-oswalk", action="store_true")
+    p.add_argument("--output", type=Path, help="JSON output path")
+    p.add_argument("--markdown", type=Path, help="markdown report path")
+    p.add_argument("--keep-dataset", action="store_true")
+    p.add_argument("--quick", action="store_true", help="tiny dataset, 2 runs, smoke test")
+    args = p.parse_args()
 
-    parser.add_argument(
-        "--sizes",
-        nargs="+",
-        choices=list(DATASET_SIZES.keys()),
-        default=["small", "medium"],
-        help="Dataset sizes to test"
-    )
+    repo_root = Path(__file__).resolve().parent
 
-    parser.add_argument(
-        "--scenarios",
-        nargs="+",
-        choices=["all_files", "extension_jpg", "extension_multi", "regex_pattern", "quiet_exists"],
-        default=["all_files", "extension_jpg", "regex_pattern"],
-        help="Scenarios to test"
-    )
+    if args.quick:
+        args.sizes = ["tiny"]
+        args.runs = 2
+        args.warmup = 0
 
-    parser.add_argument("--runs", type=int, default=5, help="Runs per test")
-    parser.add_argument("--warmup", type=int, default=1, help="Warmup runs")
-    parser.add_argument("--pfind", type=Path, default=Path("./pfind"), help="Path to pfind")
-    parser.add_argument("--output", type=Path, help="Save results to JSON")
-    parser.add_argument("--keep-dataset", action="store_true", help="Don't delete dataset")
-    parser.add_argument("-v", "--verbose", action="store_true")
+    # Build / locate binary
+    if args.pfind:
+        pfind = args.pfind.expanduser().resolve()
+        if not pfind.exists():
+            sys.exit(f"pfind not found at {pfind}")
+    else:
+        pfind = build_pfind(repo_root, force=args.rebuild) if (args.build or args.rebuild) \
+                else (repo_root / "target" / "release" / "pfind")
+        if not pfind.exists():
+            print(f"⚠ {pfind} missing — running cargo build --release ...")
+            pfind = build_pfind(repo_root, force=False)
 
-    args = parser.parse_args()
+    use_hyperfine = (not args.no_hyperfine) and have("hyperfine")
+    max_threads = os.cpu_count() or 4
 
-    args.pfind = args.pfind.expanduser().resolve()
+    # Header
+    print("=" * 80)
+    print(" pfind benchmark suite")
+    print("=" * 80)
+    sysinfo = gather_system_info(repo_root)
+    for k, v in sysinfo.items():
+        if k == "versions": continue
+        print(f"  {k:<20} {v}")
+    print(f"  pfind binary         {pfind}")
+    print(f"  hyperfine            {'on' if use_hyperfine else 'off'}")
+    print(f"  sweeps               {args.sweeps or 'none (default variant only)'}")
+    print()
+    print("  tools:")
+    for k, v in sysinfo["versions"].items():
+        print(f"    {k:<10} {v or 'not found'}")
 
-    print("╔════════════════════════════════════════════════════════════════════════════╗")
-    print("║                    PFIND ADVANCED BENCHMARK SUITE                          ║")
-    print("╚════════════════════════════════════════════════════════════════════════════╝")
-
-    # Check tools
-    print("\n▶ Checking available tools...")
-    tools = {
-        "find": check_tool("find", "--version") or "found",
-        "fd": check_tool("fd", "--version"),
-        "pfind": str(args.pfind) if args.pfind.exists() else None,
-    }
-
-    for name, version in tools.items():
-        status = f"✓ {version}" if version else "✗ not found"
-        print(f"  {name:<10} {status}")
-
-    if not tools["pfind"]:
-        print(f"\n⚠ pfind not found at {args.pfind}")
-        print("  Build with: make")
-
-    all_results = []
-
-    tmpdir = tempfile.mkdtemp(prefix="pfind_bench_")
-    base_dir = Path(tmpdir)
+    # Run
+    sweeps = set(args.sweeps)
+    all_results: list[BenchmarkResult] = []
+    tmpdir = Path(tempfile.mkdtemp(prefix="pfind_bench_"))
 
     try:
-        for size_name in args.sizes:
-            config = DATASET_SIZES[size_name]
-
-            print(f"\n{'▶'} Dataset: {size_name} ({config.total_files:,} files)")
-            print("─" * 60)
-
-            dataset_path = base_dir / f"dataset_{size_name}"
-            dataset_path.mkdir(parents=True, exist_ok=True)
-            create_dataset(dataset_path, config, verbose=True)
+        for size in args.sizes:
+            cfg = DATASET_SIZES[size]
+            print(f"\n▶ dataset {size} ({cfg.total_files:,} files)")
+            ds_root = tmpdir / f"ds_{size}"
+            ds_root.mkdir(parents=True, exist_ok=True)
+            create_dataset(ds_root, cfg, verbose=True)
 
             for scenario in args.scenarios:
-                print(f"\n  ▷ Scenario: {scenario}")
-
-                results = run_scenario(
-                    scenario,
-                    dataset_path,
-                    config,
-                    args.pfind,
-                    runs=args.runs,
-                    warmup=args.warmup,
+                spec = SCENARIOS[scenario]
+                print(f"\n  ▷ scenario {scenario}{' ' + WALKER_ONLY_NOTE if not spec['fair'] else ''}")
+                rs = run_scenario(
+                    scenario, spec, ds_root, cfg, pfind,
+                    runs=args.runs, warmup=args.warmup, sweeps=sweeps,
+                    use_hyperfine=use_hyperfine,
+                    max_threads=max_threads,
+                    skip_oswalk=args.skip_oswalk,
                 )
+                all_results.extend(rs)
+                print_scenario_block(rs)
 
-                all_results.extend(results)
-
-                if results:
-                    fastest = min(r.mean for r in results if r.mean > 0)
-                    for r in sorted(results, key=lambda x: x.mean if x.mean > 0 else float('inf')):
-                        is_fastest = r.mean == fastest and r.mean > 0
-                        indicator = "★" if is_fastest else " "
-                        print(
-                            f"    {indicator} {r.tool:<12} "
-                            f"{format_time(r.mean):>10} ± {format_time(r.stddev):<10} "
-                            f"({r.files_found:,} files, {format_rate(r.files_per_sec)})"
-                        )
-
-        print_comparison_matrix(all_results)
-        print_summary(all_results)
+        print_speedup_matrix(all_results)
+        print_correctness(all_results)
 
         if args.output:
-            output_data = {
-                "metadata": {
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "runs_per_test": args.runs,
-                    "sizes_tested": args.sizes,
-                    "scenarios_tested": args.scenarios,
-                },
-                "tools": tools,
-                "results": [
-                    {
-                        "tool": r.tool,
-                        "scenario": r.scenario,
-                        "dataset": r.dataset,
-                        "mean": r.mean,
-                        "stddev": r.stddev,
-                        "min": r.min,
-                        "max": r.max,
-                        "files_found": r.files_found,
-                        "files_per_sec": r.files_per_sec,
-                        "runs": r.runs,
-                    }
-                    for r in all_results
-                ],
-            }
-
             with open(args.output, "w") as f:
-                json.dump(output_data, f, indent=2)
-            print(f"\n✓ Results saved to {args.output}")
+                json.dump({
+                    "metadata": sysinfo | {
+                        "runs": args.runs,
+                        "warmup": args.warmup,
+                        "sizes": args.sizes,
+                        "scenarios": args.scenarios,
+                        "sweeps": sorted(sweeps),
+                    },
+                    "results": [r.to_dict() for r in all_results],
+                }, f, indent=2)
+            print(f"\n✓ JSON  → {args.output}")
+
+        if args.markdown:
+            meta = {**sysinfo, "runs": args.runs, "warmup": args.warmup,
+                    "sweeps": sorted(sweeps)}
+            write_markdown(args.markdown, all_results, meta)
+            print(f"✓ MD    → {args.markdown}")
 
     finally:
-        if not args.keep_dataset:
-            print(f"\n▶ Cleaning up temporary dataset...")
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        if args.keep_dataset:
+            print(f"\n▶ dataset kept at {tmpdir}")
         else:
-            print(f"\n▶ Dataset kept at: {tmpdir}")
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\n✓ Benchmark complete!")
+    print("\n✓ done.")
     return 0
 
 
