@@ -1,86 +1,105 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::thread::JoinHandle;
+
 use crate::cli::Cli;
 use crate::config::Config;
-use crate::queue::{make_dir_file_queues, DirQueue, FileQueue};
-use crate::walker::walk_dirs;
-use crate::process::process_files;
+use crate::queue::{DirQueue, WorkCounters, WorkQueue};
+use crate::walker::{flush_worker_final, walk_one, WorkerState};
 
 pub struct Scheduler;
 
-enum Role {
-  Walker,
-  Processor,
-}
-
 impl Scheduler {
   pub(crate) fn run(config: &Config, cli: &Cli) {
-    // How many worker threads to run.
-    let num_threads = config
-      .num_threads
-      .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    let total = config.effective_threads().max(1);
+    let dir_q: DirQueue<PathBuf> =
+      WorkQueue::new(config.work_queue_backend, config.dir_queue_capacity);
 
+    let counters = WorkCounters::new();
+    let matched = AtomicU64::new(0);
+    let total_size = AtomicU64::new(0);
 
-    // Create shared dir/file queues for PathBuf tasks.
-    let (dir_q, file_q): (DirQueue<PathBuf>, FileQueue<PathBuf>) = make_dir_file_queues(config);
+    let filter = cli.filter_config();
+    let output = cli.output_config();
 
-    let _ = dir_q.try_push(cli.root.clone());
-
-    // Spawn N workers in a scoped thread environment so we can borrow `&Config`.
-    let total = num_threads;
-    let num_stage_b = ((total as f64) * config.worker_split_ratio).round() as usize;
-    let num_stage_b = num_stage_b.clamp(1, total - 1);
-    let num_stage_a = total - num_stage_b;
-
-    // Stage A biased workers
-    for _ in 0..num_stage_a {
-      spawn_worker(dir_q.clone(), file_q.clone(), config.clone(), Role::Walker);
+    counters.add_dirs(1);
+    let mut root = cli.root.clone();
+    loop {
+      match dir_q.try_push(root) {
+        Ok(()) => break,
+        Err(r) => {
+          root = r;
+          thread::yield_now();
+        }
+      }
     }
 
-    // Stage B biased workers
-    for _ in 0..num_stage_b {
-      spawn_worker(dir_q.clone(), file_q.clone(), config.clone(), Role::Processor);
+    thread::scope(|s| {
+      for _ in 0..total {
+        let dir_q = dir_q.clone();
+        let cfg = config.clone();
+        let filter_ref = &filter;
+        let output_ref = &output;
+        let counters_ref = &counters;
+        let matched_ref = &matched;
+        let size_ref = &total_size;
+
+        s.spawn(move || {
+          let mut state = WorkerState::new(64 * 1024, cfg.dir_batch_size);
+          worker_loop(
+            &dir_q,
+            &cfg,
+            filter_ref,
+            output_ref,
+            counters_ref,
+            matched_ref,
+            size_ref,
+            &mut state,
+          );
+          flush_worker_final(&mut state, matched_ref, size_ref);
+        });
+      }
+    });
+
+    if output.count_only {
+      println!("{}", matched.load(Ordering::Relaxed));
+    }
+    if output.sum_size {
+      let n = total_size.load(Ordering::Relaxed);
+      println!("total: {} bytes", n);
     }
   }
 }
 
-fn spawn_worker(
-  dir_q: DirQueue<PathBuf>,
-  file_q: FileQueue<PathBuf>,
-  config: Config,
-  role: Role,
-) -> JoinHandle<()> {
-  thread::spawn(move || {
-    loop {
-      match role {
-        Role::Processor => {
-          // Prefer files
-          if process_files(&file_q, &config) {
-            continue;
-          }
-          // Optionally steal dir work when idle
-          if config.allow_steal_dirs_when_idle && walk_dirs(&dir_q, &file_q, &config) {
-            continue;
-          }
-        }
-        Role::Walker => {
-          // Prefer dirs
-          if walk_dirs(&dir_q, &file_q, &config) {
-            continue;
-          }
-          // Optionally steal file work when idle
-          if config.allow_steal_files_when_idle && process_files(&file_q, &config) {
-            continue;
-          }
-        }
-      }
-
-      // if dir_q.is_empty() && file_q.is_empty() {
-      //   break;
-      // }
-
-      // thread::yield_now();
+#[allow(clippy::too_many_arguments)]
+fn worker_loop(
+  dir_q: &DirQueue<PathBuf>,
+  config: &Config,
+  filter: &crate::cli::FilterConfig,
+  output: &crate::cli::OutputConfig,
+  counters: &WorkCounters,
+  matched: &AtomicU64,
+  total_size: &AtomicU64,
+  state: &mut WorkerState,
+) {
+  let mut idle_spins = 0u32;
+  loop {
+    if walk_one(dir_q, config, filter, output, counters, matched, total_size, state) {
+      idle_spins = 0;
+      continue;
     }
-  })
+
+    // No work: check quiescence then back off. Yield immediately — spin
+    // wasted cycles on small datasets where many workers idle once initial
+    // dirs are consumed.
+    if counters.all_quiet() {
+      return;
+    }
+    idle_spins = idle_spins.saturating_add(1);
+    if idle_spins < 1024 {
+      thread::yield_now();
+    } else {
+      thread::sleep(std::time::Duration::from_micros(50));
+    }
+  }
 }

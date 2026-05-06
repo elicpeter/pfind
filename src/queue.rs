@@ -9,6 +9,7 @@
 //! API exposing `try_push`, `try_pop`, and `pop_batch`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_queue::ArrayQueue;
 
@@ -194,6 +195,49 @@ pub fn make_dir_file_queues<DirItem, FileItem>(
   let file_q = WorkQueue::new(backend, cfg.file_queue_capacity);
 
   (dir_q, file_q)
+}
+
+/// Count of dirs in flight: enqueued but not yet popped + popped but not yet
+/// finished walking. Producers `add_dirs` BEFORE pushing; consumers
+/// `sub_dirs` AFTER they finish walking the popped directory. The single
+/// counter is enough for quiescence because the underlying queue ops
+/// synchronise-with each other (release/acquire), so when all_quiet
+/// returns true, no thread can still hold a reference to in-flight work.
+pub struct WorkCounters {
+  pub dir_pending: AtomicUsize,
+}
+
+impl WorkCounters {
+  pub fn new() -> Self {
+    Self {
+      dir_pending: AtomicUsize::new(0),
+    }
+  }
+
+  #[inline]
+  pub fn add_dirs(&self, n: usize) {
+    if n > 0 {
+      self.dir_pending.fetch_add(n, Ordering::Relaxed);
+    }
+  }
+
+  #[inline]
+  pub fn sub_dirs(&self, n: usize) {
+    if n > 0 {
+      self.dir_pending.fetch_sub(n, Ordering::Relaxed);
+    }
+  }
+
+  #[inline]
+  pub fn all_quiet(&self) -> bool {
+    self.dir_pending.load(Ordering::Acquire) == 0
+  }
+}
+
+impl Default for WorkCounters {
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 #[cfg(test)]

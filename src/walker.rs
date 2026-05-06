@@ -1,75 +1,322 @@
-//! Directory traversal (Stage A).
+//! Single-stage directory walker.
 //!
-//! Responsible for:
-//!   - Pulling directories from `DirQueue`
-//!   - Reading entries
-//!   - Partitioning into subdirectories and files
-//!   - Pushing into `DirQueue` and `FileQueue` in batches
+//! Each worker pops a directory, reads its entries, recurses into subdirs
+//! by pushing them onto the shared dir queue, and inline-applies the filter
+//! to files, writing matches into a thread-local output buffer or counter.
+//! No separate file queue or processor stage — file processing is cheap
+//! enough that the queue handoff dominated.
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 
+use crate::cli::{FilterConfig, OutputConfig};
 use crate::config::Config;
-use crate::queue::{DirQueue, FileQueue};
+use crate::process::{glob_match, name_matches_extension};
+use crate::queue::{DirQueue, WorkCounters};
 
-/// Traverse a directory (or batch of directories) and enqueue its contents.
-///
-/// This function is intended to be called from worker threads, as part of
-/// Stage A. It should be relatively small and non-blocking except for the
-/// actual `read_dir` calls.
-///
-/// For now, this is just an outline.
-pub fn walk_dirs(
+/// Per-worker scratch state. Lives for the entire worker lifetime.
+pub struct WorkerState {
+  pub out: Vec<u8>,
+  pub local_count: u64,
+  pub local_size: u64,
+  pub child_dirs: Vec<PathBuf>,
+}
+
+impl WorkerState {
+  pub fn new(out_cap: usize, dir_batch: usize) -> Self {
+    Self {
+      out: Vec::with_capacity(out_cap),
+      local_count: 0,
+      local_size: 0,
+      child_dirs: Vec::with_capacity(dir_batch),
+    }
+  }
+}
+
+/// Threshold at which the worker flushes its output buffer to stdout.
+const OUT_FLUSH_BYTES: usize = 64 * 1024;
+
+/// Walk one directory popped from `dir_queue`. Returns true if a directory
+/// was popped (and processed), false if the queue was empty.
+pub fn walk_one(
   dir_queue: &DirQueue<PathBuf>,
-  file_queue: &FileQueue<PathBuf>,
   config: &Config,
+  filter: &FilterConfig,
+  output: &OutputConfig,
+  counters: &WorkCounters,
+  matched: &AtomicU64,
+  total_size: &AtomicU64,
+  state: &mut WorkerState,
 ) -> bool {
   let dir = match dir_queue.try_pop() {
     Some(d) => d,
     None => return false,
   };
 
-  let mut local_dirs = Vec::with_capacity(config.dir_batch_size);
-  let mut local_files = Vec::with_capacity(config.file_batch_size);
-
   let read_dir = match fs::read_dir(&dir) {
     Ok(rd) => rd,
-    Err(_) => return true, // treat as "handled", just skip on error
+    Err(_) => {
+      counters.sub_dirs(1);
+      return true;
+    }
   };
+
+  let need_size = output.sum_size
+    || output.long_format
+    || filter.min_size.is_some()
+    || filter.max_size.is_some();
+  let count_only = output.count_only;
+  let print_paths = !count_only;
+  let dirs_match = filter.match_dirs;
+  let exts = &filter.extensions;
+  let name_pat = filter.name_pattern.as_deref();
+
+  let dir_bytes = dir.as_os_str().as_bytes();
+  let dir_needs_sep = !dir_bytes.is_empty() && *dir_bytes.last().unwrap() != b'/';
 
   for entry in read_dir {
     let entry = match entry {
       Ok(e) => e,
       Err(_) => continue,
     };
-
-    let path = entry.path();
-    let file_type = match entry.file_type() {
-      Ok(ft) => ft,
+    let ft = match entry.file_type() {
+      Ok(t) => t,
       Err(_) => continue,
     };
 
-    if file_type.is_dir() {
-      local_dirs.push(path);
-      if local_dirs.len() >= config.dir_batch_size {
-        dir_queue.try_push_batch(local_dirs.drain(..));
+    let name = entry.file_name();
+    let name_bytes = name.as_bytes();
+
+    if ft.is_dir() {
+      if should_skip_dir_bytes(name_bytes, filter) {
+        continue;
       }
-    } else if file_type.is_file() {
-      local_files.push(path);
-      if local_files.len() >= config.file_batch_size {
-        file_queue.try_push_batch(local_files.drain(..));
+      // Allocate a PathBuf for the subdir queue entry.
+      let mut child = PathBuf::with_capacity(dir_bytes.len() + 1 + name_bytes.len());
+      child.push(&dir);
+      child.push(&name);
+
+      if dirs_match && name_matches(name_bytes, exts, name_pat) {
+        write_match(
+          state,
+          dir_bytes,
+          dir_needs_sep,
+          name_bytes,
+          &child,
+          need_size,
+          print_paths,
+          output,
+        );
+      }
+
+      state.child_dirs.push(child);
+      if state.child_dirs.len() >= config.dir_batch_size {
+        flush_dirs(dir_queue, &mut state.child_dirs, counters);
+      }
+    } else if ft.is_file() && !dirs_match {
+      if !name_matches(name_bytes, exts, name_pat) {
+        continue;
+      }
+
+      let size = if need_size {
+        match entry.metadata() {
+          Ok(m) => Some(m.len()),
+          Err(_) => continue,
+        }
+      } else {
+        None
+      };
+
+      if let Some(min) = filter.min_size {
+        if size.map_or(true, |s| s < min) {
+          continue;
+        }
+      }
+      if let Some(max) = filter.max_size {
+        if size.map_or(true, |s| s > max) {
+          continue;
+        }
+      }
+
+      state.local_count += 1;
+      if let Some(s) = size {
+        state.local_size += s;
+      }
+
+      if print_paths {
+        if output.long_format {
+          let _ = write!(&mut state.out, "{:>12}  ", size.unwrap_or(0));
+          state.out.extend_from_slice(dir_bytes);
+          if dir_needs_sep {
+            state.out.push(b'/');
+          }
+          state.out.extend_from_slice(name_bytes);
+          state.out.push(b'\n');
+        } else {
+          state.out.extend_from_slice(dir_bytes);
+          if dir_needs_sep {
+            state.out.push(b'/');
+          }
+          state.out.extend_from_slice(name_bytes);
+          state.out.push(b'\n');
+        }
+        if state.out.len() >= OUT_FLUSH_BYTES {
+          flush_out(&mut state.out);
+        }
       }
     }
   }
 
-
-  // flush any leftovers
-  if !local_dirs.is_empty() {
-    dir_queue.try_push_batch(local_dirs.drain(..));
-  }
-  if !local_files.is_empty() {
-    file_queue.try_push_batch(local_files.drain(..));
+  if !state.child_dirs.is_empty() {
+    flush_dirs(dir_queue, &mut state.child_dirs, counters);
   }
 
+  // Periodic output flush for matching workers that haven't crossed threshold.
+  if state.out.len() >= OUT_FLUSH_BYTES / 2 {
+    flush_out(&mut state.out);
+  }
+
+  // Periodically merge per-thread counters back to globals so the main
+  // thread sees progress (and in case the worker exits abruptly).
+  if state.local_count >= 4096 {
+    matched.fetch_add(state.local_count, Ordering::Relaxed);
+    state.local_count = 0;
+    if state.local_size > 0 {
+      total_size.fetch_add(state.local_size, Ordering::Relaxed);
+      state.local_size = 0;
+    }
+  }
+
+  counters.sub_dirs(1);
   true
+}
+
+/// Drain `state.out` and `state.local_count` into globals. Called at worker
+/// exit.
+pub fn flush_worker_final(
+  state: &mut WorkerState,
+  matched: &AtomicU64,
+  total_size: &AtomicU64,
+) {
+  flush_out(&mut state.out);
+  if state.local_count > 0 {
+    matched.fetch_add(state.local_count, Ordering::Relaxed);
+    state.local_count = 0;
+  }
+  if state.local_size > 0 {
+    total_size.fetch_add(state.local_size, Ordering::Relaxed);
+    state.local_size = 0;
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_match(
+  state: &mut WorkerState,
+  dir_bytes: &[u8],
+  dir_needs_sep: bool,
+  name_bytes: &[u8],
+  full_path: &Path,
+  need_size: bool,
+  print_paths: bool,
+  output: &OutputConfig,
+) {
+  let size = if need_size {
+    fs::metadata(full_path).map(|m| m.len()).ok()
+  } else {
+    None
+  };
+  state.local_count += 1;
+  if let Some(s) = size {
+    state.local_size += s;
+  }
+  if print_paths {
+    if output.long_format {
+      let _ = write!(&mut state.out, "{:>12}  ", size.unwrap_or(0));
+    }
+    state.out.extend_from_slice(dir_bytes);
+    if dir_needs_sep {
+      state.out.push(b'/');
+    }
+    state.out.extend_from_slice(name_bytes);
+    state.out.push(b'\n');
+    if state.out.len() >= OUT_FLUSH_BYTES {
+      flush_out(&mut state.out);
+    }
+  }
+}
+
+#[inline]
+fn name_matches(name: &[u8], exts: &[String], pat: Option<&str>) -> bool {
+  if !exts.is_empty() && !any_extension_matches(name, exts) {
+    return false;
+  }
+  if let Some(p) = pat {
+    if !glob_match(p.as_bytes(), name) {
+      return false;
+    }
+  }
+  true
+}
+
+#[inline]
+fn any_extension_matches(name: &[u8], exts: &[String]) -> bool {
+  for e in exts {
+    if name_matches_extension(name, e.as_bytes()) {
+      return true;
+    }
+  }
+  false
+}
+
+/// Push every queued dir, retrying if the bounded queue is full.
+fn flush_dirs(
+  dir_queue: &DirQueue<PathBuf>,
+  buf: &mut Vec<PathBuf>,
+  counters: &WorkCounters,
+) {
+  let n = buf.len();
+  if n == 0 {
+    return;
+  }
+  // Reserve capacity in the pending counter BEFORE pushing so any
+  // observer who pops these items can't decrement past the producer's add.
+  counters.add_dirs(n);
+
+  let mut leftover = dir_queue.try_push_batch(buf.drain(..));
+  while !leftover.is_empty() {
+    thread::yield_now();
+    leftover = dir_queue.try_push_batch(leftover);
+  }
+}
+
+fn flush_out(buf: &mut Vec<u8>) {
+  if buf.is_empty() {
+    return;
+  }
+  let stdout = std::io::stdout();
+  let mut h = stdout.lock();
+  let _ = h.write_all(buf);
+  buf.clear();
+}
+
+fn should_skip_dir_bytes(name: &[u8], filter: &FilterConfig) -> bool {
+  if filter.skip_dirs.is_empty() {
+    return false;
+  }
+  for skip in &filter.skip_dirs {
+    let s = skip.as_bytes();
+    if s == name {
+      return true;
+    }
+    if let Some(suffix) = s.strip_prefix(b"*") {
+      if name.len() >= suffix.len() && &name[name.len() - suffix.len()..] == suffix {
+        return true;
+      }
+    }
+  }
+  false
 }
