@@ -2,3 +2,5 @@
 .idea
 pfind
 .DS_Store
+/profiles
+/docs

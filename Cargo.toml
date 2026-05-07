@@ -2,6 +2,27 @@
 name = "pfind"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+authors = ["Eli Peter <elicpeter@gmail.com>"]
+description = "Parallel directory walker tuned for APFS. ~5x faster than fd/rg on macOS via work-stealing and per-volume worker tuning."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/elicpeter/pfind"
+homepage = "https://github.com/elicpeter/pfind"
+documentation = "https://docs.rs/pfind"
+readme = "README.md"
+keywords = ["find", "fd", "filesystem", "parallel", "walker"]
+categories = ["command-line-utilities", "filesystem", "concurrency"]
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+[[bin]]
+name = "pfind"
+path = "src/main.rs"
 
 [dependencies]
 crossbeam = "0.8.4"
@@ -9,10 +30,13 @@ clap = { version = "4.5.53", features = ["derive"] }
 num_cpus = "1.17.0"
 
 [profile.release]
-debug = "line-tables-only"
-lto = true
+opt-level = 3
+lto = "fat"
 codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
 strip = "none"
+incremental = false
 
 [profile.bench]
 debug = true
