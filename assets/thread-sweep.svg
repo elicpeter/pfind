@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Helvetica Neue', sans-serif" font-size="12">
+<defs>
+  <style>
+    .bg   {fill:#fbfbf8;}
+    .frame{fill:none; stroke:#d8d8d3; stroke-width:1;}
+    .grid {stroke:#e6e6e6; stroke-width:1;}
+    .axis {stroke:#444; stroke-width:1;}
+    .tick {fill:#555; font-size:11px;}
+    .ttl  {fill:#111; font-size:14px; font-weight:600;}
+    .sub  {fill:#666; font-size:11px;}
+    .lbl  {fill:#222; font-size:11px;}
+    .pt   {fill:#0f5f36; stroke:#0f5f36;}
+    .ln   {stroke:#0f5f36; stroke-width:2; fill:none;}
+    .min  {fill:#0f5f36; font-size:11px; font-weight:600;}
+    .opt  {stroke:#0f5f36; stroke-dasharray:3 4;}
+  </style>
+</defs>
+<rect class="bg" x="0" y="0" width="720" height="300"/>
+<rect class="frame" x="0.5" y="0.5" width="719" height="299"/>
+<text class="ttl" x="360.0" y="22" text-anchor="middle">Thread count sweep, 100,000 file tree, all_files</text>
+<line class="grid" x1="60" y1="250.0" x2="680" y2="250.0"/>
+<text class="tick" x="52" y="254.0" text-anchor="end">0</text>
+<line class="grid" x1="60" y1="216.7" x2="680" y2="216.7"/>
+<text class="tick" x="52" y="220.7" text-anchor="end">15</text>
+<line class="grid" x1="60" y1="183.3" x2="680" y2="183.3"/>
+<text class="tick" x="52" y="187.3" text-anchor="end">30</text>
+<line class="grid" x1="60" y1="150.0" x2="680" y2="150.0"/>
+<text class="tick" x="52" y="154.0" text-anchor="end">45</text>
+<line class="grid" x1="60" y1="116.7" x2="680" y2="116.7"/>
+<text class="tick" x="52" y="120.7" text-anchor="end">60</text>
+<line class="grid" x1="60" y1="83.3" x2="680" y2="83.3"/>
+<text class="tick" x="52" y="87.3" text-anchor="end">75</text>
+<line class="grid" x1="60" y1="50.0" x2="680" y2="50.0"/>
+<text class="tick" x="52" y="54.0" text-anchor="end">90</text>
+<line class="axis" x1="60" y1="250" x2="680" y2="250"/>
+<text class="lbl" x="30" y="40" text-anchor="start">ms</text>
+<line class="grid" x1="111.7" y1="50" x2="111.7" y2="250"/>
+<text class="tick" x="111.7" y="266.0" text-anchor="middle">1</text>
+<line class="grid" x1="163.3" y1="50" x2="163.3" y2="250"/>
+<text class="tick" x="163.3" y="266.0" text-anchor="middle">2</text>
+<line class="grid" x1="266.7" y1="50" x2="266.7" y2="250"/>
+<text class="tick" x="266.7" y="266.0" text-anchor="middle">4</text>
+<line class="grid" x1="370.0" y1="50" x2="370.0" y2="250"/>
+<text class="tick" x="370.0" y="266.0" text-anchor="middle">6</text>
+<line class="grid" x1="473.3" y1="50" x2="473.3" y2="250"/>
+<text class="tick" x="473.3" y="266.0" text-anchor="middle">8</text>
+<line class="grid" x1="576.7" y1="50" x2="576.7" y2="250"/>
+<text class="tick" x="576.7" y="266.0" text-anchor="middle">10</text>
+<line class="grid" x1="680.0" y1="50" x2="680.0" y2="250"/>
+<text class="tick" x="680.0" y="266.0" text-anchor="middle">12</text>
+<text class="lbl" x="370.0" y="284.0" text-anchor="middle">workers (-j)</text>
+<polyline class="ln" points="111.7,78.9 163.3,155.3 266.7,147.6 370.0,135.6 473.3,121.3 576.7,108.4 680.0,91.6"/>
+<circle class="pt" cx="111.7" cy="78.9" r="3.5"/>
+<circle class="pt" cx="163.3" cy="155.3" r="3.5"/>
+<circle class="pt" cx="266.7" cy="147.6" r="3.5"/>
+<circle class="pt" cx="370.0" cy="135.6" r="3.5"/>
+<circle class="pt" cx="473.3" cy="121.3" r="3.5"/>
+<circle class="pt" cx="576.7" cy="108.4" r="3.5"/>
+<circle class="pt" cx="680.0" cy="91.6" r="3.5"/>
+<line class="opt" x1="163.3" y1="155.3" x2="163.3" y2="250.0"/>
+<text class="min" x="163.3" y="145.3" text-anchor="middle">42.6 ms at j=2</text>
+</svg>
