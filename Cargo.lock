@@ -200,7 +200,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "crossbeam",
- "crossbeam-queue",
  "num_cpus",
 ]
 

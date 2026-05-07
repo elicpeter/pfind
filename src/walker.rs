@@ -1,22 +1,23 @@
-//! Single-stage directory walker.
+//! Single-stage directory walker with per-thread work-stealing deque.
 //!
-//! Each worker pops a directory, reads its entries, recurses into subdirs
-//! by pushing them onto the shared dir queue, and inline-applies the filter
-//! to files, writing matches into a thread-local output buffer or counter.
-//! No separate file queue or processor stage — file processing is cheap
-//! enough that the queue handoff dominated.
+//! Each worker pops a directory (locally or stolen), reads its entries,
+//! and inline-applies the filter to files (counter or output buffer).
+//! Subdirectories are pushed onto the worker's own `Worker<PathBuf>`
+//! deque, which costs no atomic; idle peers steal from it. There is
+//! no shared MPMC queue and no per-loop yield.
 
 use std::fs;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
+
+use crossbeam::deque::Worker;
 
 use crate::cli::{FilterConfig, OutputConfig};
 use crate::config::Config;
 use crate::process::{glob_match, name_matches_extension};
-use crate::queue::{DirQueue, WorkCounters};
+use crate::queue::Pool;
 
 /// Per-worker scratch state. Lives for the entire worker lifetime.
 pub struct WorkerState {
@@ -40,26 +41,22 @@ impl WorkerState {
 /// Threshold at which the worker flushes its output buffer to stdout.
 const OUT_FLUSH_BYTES: usize = 256 * 1024;
 
-/// Walk one directory popped from `dir_queue`. Returns true if a directory
-/// was popped (and processed), false if the queue was empty.
+/// Walk one already-popped directory. Pushes any subdirs found onto
+/// the caller's local deque and decrements `dir_pending` once done.
 pub fn walk_one(
-  dir_queue: &DirQueue<PathBuf>,
-  config: &Config,
+  dir: PathBuf,
+  _config: &Config,
   filter: &FilterConfig,
   output: &OutputConfig,
-  counters: &WorkCounters,
+  pool: &Pool<PathBuf>,
+  local: &Worker<PathBuf>,
   state: &mut WorkerState,
-) -> bool {
-  let dir = match dir_queue.try_pop() {
-    Some(d) => d,
-    None => return false,
-  };
-
+) {
   let read_dir = match fs::read_dir(&dir) {
     Ok(rd) => rd,
     Err(_) => {
-      counters.sub_dirs(1);
-      return true;
+      pool.sub_dirs(1);
+      return;
     }
   };
 
@@ -76,6 +73,8 @@ pub fn walk_one(
 
   let dir_bytes = dir.as_os_str().as_bytes();
   let dir_needs_sep = !dir_bytes.is_empty() && *dir_bytes.last().unwrap() != b'/';
+
+  state.child_dirs.clear();
 
   for entry in read_dir {
     let entry = match entry {
@@ -122,9 +121,6 @@ pub fn walk_one(
       }
 
       state.child_dirs.push(child);
-      if state.child_dirs.len() >= config.dir_batch_size {
-        flush_dirs(dir_queue, &mut state.child_dirs, counters);
-      }
     } else if ft.is_file() && !dirs_match {
       if !name_matches(name_bytes, exts, name_pat) {
         continue;
@@ -179,17 +175,18 @@ pub fn walk_one(
     }
   }
 
-  if !state.child_dirs.is_empty() {
-    flush_dirs(dir_queue, &mut state.child_dirs, counters);
+  // Publish discovered subdirs to the local deque. add_dirs MUST happen
+  // before any push so a stealer's later sub_dirs can't underflow.
+  let n = state.child_dirs.len();
+  if n > 0 {
+    pool.add_dirs(n);
+    for child in state.child_dirs.drain(..) {
+      local.push(child);
+    }
+    pool.maybe_unpark();
   }
 
-  // No per-dir flushes — let the buffer fill toward OUT_FLUSH_BYTES.
-  // flush_worker_final drains anything left at exit. local_count likewise
-  // gets folded into the global once at exit (a fetch_add per dir is pure
-  // contention; we don't need progress visibility mid-run).
-
-  counters.sub_dirs(1);
-  true
+  pool.sub_dirs(1);
 }
 
 /// Drain `state.out` and `state.local_count` into globals. Called at worker
@@ -267,27 +264,6 @@ fn any_extension_matches(name: &[u8], exts: &[String]) -> bool {
     }
   }
   false
-}
-
-/// Push every queued dir, retrying if the bounded queue is full.
-fn flush_dirs(
-  dir_queue: &DirQueue<PathBuf>,
-  buf: &mut Vec<PathBuf>,
-  counters: &WorkCounters,
-) {
-  let n = buf.len();
-  if n == 0 {
-    return;
-  }
-  // Reserve capacity in the pending counter BEFORE pushing so any
-  // observer who pops these items can't decrement past the producer's add.
-  counters.add_dirs(n);
-
-  let mut leftover = dir_queue.try_push_batch(buf.drain(..));
-  while !leftover.is_empty() {
-    thread::yield_now();
-    leftover = dir_queue.try_push_batch(leftover);
-  }
 }
 
 fn flush_out(buf: &mut Vec<u8>) {

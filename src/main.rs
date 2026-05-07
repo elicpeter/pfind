@@ -4,7 +4,6 @@ mod config;
 mod process;
 mod queue;
 mod scheduler;
-mod stack;
 mod walker;
 
 use clap::Parser;

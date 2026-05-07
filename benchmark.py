@@ -351,41 +351,46 @@ SCENARIOS = {
     "all_files": {
         "fair": True,
         "pfind_args": [],
-        "fd": lambda root: ["fd", "-t", "f", ".", root],
+        "fd": lambda root: ["fd", "-t", "f", ".", root, "--no-ignore", "--hidden"],
         "find": lambda root: ["find", root, "-type", "f"],
-        "rg": lambda root: ["rg", "--files", root],
+        "rg": lambda root: ["rg", "--files", root, "--no-ignore", "--hidden"],
+        "bfs": lambda root: ["bfs", root, "-type", "f"],
         "oswalk_ext": None,
     },
     "extension_jpg": {
         "fair": True,
         "pfind_args": ["-e", "jpg"],
-        "fd": lambda root: ["fd", "-e", "jpg", ".", root],
+        "fd": lambda root: ["fd", "-e", "jpg", ".", root, "--no-ignore", "--hidden"],
         "find": lambda root: ["find", root, "-name", "*.jpg"],
-        "rg": lambda root: ["rg", "--files", "-g", "*.jpg", root],
+        "rg": lambda root: ["rg", "--files", "-g", "*.jpg", root, "--no-ignore", "--hidden"],
+        "bfs": lambda root: ["bfs", root, "-name", "*.jpg"],
         "oswalk_ext": "jpg",
     },
     "extension_multi": {
         "fair": True,
         "pfind_args": ["-e", "jpg,png"],
-        "fd": lambda root: ["fd", "-e", "jpg", "-e", "png", ".", root],
+        "fd": lambda root: ["fd", "-e", "jpg", "-e", "png", ".", root, "--no-ignore", "--hidden"],
         "find": lambda root: ["find", root, "(", "-name", "*.jpg", "-o", "-name", "*.png", ")"],
-        "rg": lambda root: ["rg", "--files", "-g", "*.jpg", "-g", "*.png", root],
+        "rg": lambda root: ["rg", "--files", "-g", "*.jpg", "-g", "*.png", root, "--no-ignore", "--hidden"],
+        "bfs": lambda root: ["bfs", root, "(", "-name", "*.jpg", "-o", "-name", "*.png", ")"],
         "oswalk_ext": None,
     },
     "name_glob": {
         "fair": True,
         "pfind_args": ["-n", "file_00*"],
-        "fd": lambda root: ["fd", "-g", "file_00*", root],
+        "fd": lambda root: ["fd", "-g", "file_00*", root, "--no-ignore", "--hidden"],
         "find": lambda root: ["find", root, "-name", "file_00*"],
-        "rg": lambda root: ["rg", "--files", "-g", "file_00*", root],
+        "rg": lambda root: ["rg", "--files", "-g", "file_00*", root, "--no-ignore", "--hidden"],
+        "bfs": lambda root: ["bfs", root, "-name", "file_00*"],
         "oswalk_ext": None,
     },
     "count_only": {
         "fair": True,
         "pfind_args": ["-c"],
-        "fd": lambda root: ["fd", "-t", "f", ".", root],     # no native count
+        "fd": lambda root: ["fd", "-t", "f", ".", root, "--no-ignore", "--hidden"],     # no native count
         "find": lambda root: ["find", root, "-type", "f"],
-        "rg": lambda root: ["rg", "--files", root],
+        "rg": lambda root: ["rg", "--files", root, "--no-ignore", "--hidden"],
+        "bfs": lambda root: ["bfs", root, "-type", "f"],
         "oswalk_ext": None,
     },
 }
@@ -422,8 +427,9 @@ def run_scenario(
                 timer=timer, note=note,
             ))
 
-    # External tools
-    for tool in ("fd", "find", "rg"):
+    # External tools (find skipped: slowest by ~10x, dominates wall time;
+    # add bfs as a second non-pfind reference instead).
+    for tool in ("fd", "rg", "bfs"):
         if not have(tool):
             continue
         cmd = spec[tool](root_s)
