@@ -45,15 +45,16 @@ impl Scheduler {
         let size_ref = &total_size;
 
         s.spawn(move || {
-          let mut state = WorkerState::new(64 * 1024, cfg.dir_batch_size);
+          // Tiny initial out cap — Vec doubles on push, and most small
+          // walks never need more than a few KB. Big workloads will grow
+          // it to fit; the cost is amortised.
+          let mut state = WorkerState::new(4 * 1024, cfg.dir_batch_size);
           worker_loop(
             &dir_q,
             &cfg,
             filter_ref,
             output_ref,
             counters_ref,
-            matched_ref,
-            size_ref,
             &mut state,
           );
           flush_worker_final(&mut state, matched_ref, size_ref);
@@ -71,20 +72,17 @@ impl Scheduler {
   }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn worker_loop(
   dir_q: &DirQueue<PathBuf>,
   config: &Config,
   filter: &crate::cli::FilterConfig,
   output: &crate::cli::OutputConfig,
   counters: &WorkCounters,
-  matched: &AtomicU64,
-  total_size: &AtomicU64,
   state: &mut WorkerState,
 ) {
   let mut idle_spins = 0u32;
   loop {
-    if walk_one(dir_q, config, filter, output, counters, matched, total_size, state) {
+    if walk_one(dir_q, config, filter, output, counters, state) {
       idle_spins = 0;
       continue;
     }

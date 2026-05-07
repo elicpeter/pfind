@@ -38,7 +38,7 @@ impl WorkerState {
 }
 
 /// Threshold at which the worker flushes its output buffer to stdout.
-const OUT_FLUSH_BYTES: usize = 64 * 1024;
+const OUT_FLUSH_BYTES: usize = 256 * 1024;
 
 /// Walk one directory popped from `dir_queue`. Returns true if a directory
 /// was popped (and processed), false if the queue was empty.
@@ -48,8 +48,6 @@ pub fn walk_one(
   filter: &FilterConfig,
   output: &OutputConfig,
   counters: &WorkCounters,
-  matched: &AtomicU64,
-  total_size: &AtomicU64,
   state: &mut WorkerState,
 ) -> bool {
   let dir = match dir_queue.try_pop() {
@@ -74,6 +72,7 @@ pub fn walk_one(
   let dirs_match = filter.match_dirs;
   let exts = &filter.extensions;
   let name_pat = filter.name_pattern.as_deref();
+  let need_file_name = print_paths || !exts.is_empty() || name_pat.is_some() || need_size;
 
   let dir_bytes = dir.as_os_str().as_bytes();
   let dir_needs_sep = !dir_bytes.is_empty() && *dir_bytes.last().unwrap() != b'/';
@@ -88,6 +87,16 @@ pub fn walk_one(
       Err(_) => continue,
     };
 
+    if ft.is_file() && !dirs_match {
+      // Hot path for `count_only` with no filter: skip the OsString
+      // alloc that `entry.file_name()` would do — we only need the
+      // dirent type, which we already have.
+      if !need_file_name {
+        state.local_count += 1;
+        continue;
+      }
+    }
+
     let name = entry.file_name();
     let name_bytes = name.as_bytes();
 
@@ -95,7 +104,6 @@ pub fn walk_one(
       if should_skip_dir_bytes(name_bytes, filter) {
         continue;
       }
-      // Allocate a PathBuf for the subdir queue entry.
       let mut child = PathBuf::with_capacity(dir_bytes.len() + 1 + name_bytes.len());
       child.push(&dir);
       child.push(&name);
@@ -175,21 +183,10 @@ pub fn walk_one(
     flush_dirs(dir_queue, &mut state.child_dirs, counters);
   }
 
-  // Periodic output flush for matching workers that haven't crossed threshold.
-  if state.out.len() >= OUT_FLUSH_BYTES / 2 {
-    flush_out(&mut state.out);
-  }
-
-  // Periodically merge per-thread counters back to globals so the main
-  // thread sees progress (and in case the worker exits abruptly).
-  if state.local_count >= 4096 {
-    matched.fetch_add(state.local_count, Ordering::Relaxed);
-    state.local_count = 0;
-    if state.local_size > 0 {
-      total_size.fetch_add(state.local_size, Ordering::Relaxed);
-      state.local_size = 0;
-    }
-  }
+  // No per-dir flushes — let the buffer fill toward OUT_FLUSH_BYTES.
+  // flush_worker_final drains anything left at exit. local_count likewise
+  // gets folded into the global once at exit (a fetch_add per dir is pure
+  // contention; we don't need progress visibility mid-run).
 
   counters.sub_dirs(1);
   true

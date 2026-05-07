@@ -108,7 +108,7 @@ impl Default for Config {
     Self {
       num_threads: None,
       worker_split_ratio: 0.8,
-      dir_batch_size: 32,
+      dir_batch_size: 4,
       file_batch_size: 128,
       max_dir_queue_depth: None,
       max_file_queue_depth: None,

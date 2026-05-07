@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mem = "0.5.0"
 crossbeam-queue = "0.3.12"
 crossbeam = "0.8.4"
 clap = { version = "4.5.53", features = ["derive"] }
@@ -12,6 +11,9 @@ num_cpus = "1.17.0"
 
 [profile.release]
 debug = "line-tables-only"
+lto = true
+codegen-units = 1
+strip = "none"
 
 [profile.bench]
 debug = true
