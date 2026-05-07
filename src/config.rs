@@ -33,14 +33,15 @@ impl Config {
   }
 
   pub fn effective_threads(&self) -> usize {
-    // Sweep on macOS/APFS shows j=2 is the sweet spot across small/
-    // medium/large datasets: APFS serialises getdirentries per volume
-    // so a 3rd+ worker mostly waits on the volume lock and pays
-    // park/unpark overhead. Linux per-inode locks scale wider — fall
-    // back to logical CPU count there.
+    // Sweep on macOS/APFS (M2 Max, APFS, idle system) across every
+    // scenario × size cell shows j=4 wins by 1.21-1.55× over j=2 and
+    // by 1.13× over j=3. j=5+ regresses sharply as the APFS volume
+    // lock saturates and excess workers stack on park/unpark. Linux
+    // per-inode locks scale wider — fall back to logical CPU count
+    // there.
     self.num_threads.unwrap_or_else(|| {
       if cfg!(target_os = "macos") {
-        2
+        4
       } else {
         num_cpus::get()
       }

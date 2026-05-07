@@ -15,14 +15,14 @@
 <rect class="frame" x="0.5" y="0.5" width="819" height="379"/>
 <text class="ttl" x="410.0" y="22" text-anchor="middle">Where pfind spends its time, leaf samples</text>
 <text class="sub" x="410.0" y="40" text-anchor="middle">samply at 4 kHz, 30 iterations, 100,000 file tree, default settings</text>
-<rect x="60.0" y="60" width="548.1" height="28" fill="#0f5f36"/>
-<rect x="608.1" y="60" width="62.3" height="28" fill="#1d7a4d"/>
-<rect x="670.4" y="60" width="16.8" height="28" fill="#2c8a5e"/>
-<rect x="687.2" y="60" width="14.0" height="28" fill="#3f9c70"/>
-<rect x="701.2" y="60" width="6.3" height="28" fill="#65ae8a"/>
-<rect x="707.5" y="60" width="4.2" height="28" fill="#88bea4"/>
-<rect x="711.7" y="60" width="2.8" height="28" fill="#a8cdbe"/>
-<rect x="714.5" y="60" width="45.5" height="28" fill="#c5dad0"/>
+<rect x="60.0" y="60" width="532.0" height="28" fill="#0f5f36"/>
+<rect x="592.0" y="60" width="63.7" height="28" fill="#1d7a4d"/>
+<rect x="655.7" y="60" width="17.5" height="28" fill="#2c8a5e"/>
+<rect x="673.2" y="60" width="11.2" height="28" fill="#3f9c70"/>
+<rect x="684.4" y="60" width="8.4" height="28" fill="#65ae8a"/>
+<rect x="692.8" y="60" width="7.0" height="28" fill="#88bea4"/>
+<rect x="699.8" y="60" width="3.5" height="28" fill="#a8cdbe"/>
+<rect x="703.3" y="60" width="56.7" height="28" fill="#c5dad0"/>
 <rect x="60" y="60" width="700" height="28" fill="none" stroke="#222" stroke-width="0.5"/>
 <line x1="60.0" y1="88" x2="60.0" y2="93" stroke="#444"/>
 <text class="sub" x="60.0" y="106.0" text-anchor="middle">0%</text>
@@ -36,34 +36,34 @@
 <text class="sub" x="760.0" y="106.0" text-anchor="middle">100%</text>
 <rect x="60" y="120" width="14" height="14" fill="#0f5f36" rx="2"/>
 <text class="row" x="82" y="132">__getdirentries64</text>
-<text class="pct" x="320" y="132" text-anchor="end">78.3%</text>
+<text class="pct" x="320" y="132" text-anchor="end">76.0%</text>
 <text class="des" x="340" y="132">kernel: dentry walk</text>
 <rect x="60" y="148" width="14" height="14" fill="#1d7a4d" rx="2"/>
 <text class="row" x="82" y="160">_platform_memmove</text>
-<text class="pct" x="320" y="160" text-anchor="end">8.9%</text>
+<text class="pct" x="320" y="160" text-anchor="end">9.1%</text>
 <text class="des" x="340" y="160">userland: path copy into output buffer</text>
 <rect x="60" y="176" width="14" height="14" fill="#2c8a5e" rx="2"/>
 <text class="row" x="82" y="188">__open_nocancel</text>
-<text class="pct" x="320" y="188" text-anchor="end">2.4%</text>
+<text class="pct" x="320" y="188" text-anchor="end">2.5%</text>
 <text class="des" x="340" y="188">kernel: openat per directory</text>
 <rect x="60" y="204" width="14" height="14" fill="#3f9c70" rx="2"/>
 <text class="row" x="82" y="216">application code</text>
-<text class="pct" x="320" y="216" text-anchor="end">2.0%</text>
+<text class="pct" x="320" y="216" text-anchor="end">1.6%</text>
 <text class="des" x="340" y="216">userland: walker, filter, scheduler</text>
 <rect x="60" y="232" width="14" height="14" fill="#65ae8a" rx="2"/>
-<text class="row" x="82" y="244">readdir_r</text>
-<text class="pct" x="320" y="244" text-anchor="end">0.9%</text>
-<text class="des" x="340" y="244">libc: dirent decode</text>
+<text class="row" x="82" y="244">__psynch_cvwait</text>
+<text class="pct" x="320" y="244" text-anchor="end">1.2%</text>
+<text class="des" x="340" y="244">Parker idle wait</text>
 <rect x="60" y="260" width="14" height="14" fill="#88bea4" rx="2"/>
-<text class="row" x="82" y="272">pthread_mutex_unlock</text>
-<text class="pct" x="320" y="272" text-anchor="end">0.6%</text>
-<text class="des" x="340" y="272">stdout flush</text>
+<text class="row" x="82" y="272">readdir_r</text>
+<text class="pct" x="320" y="272" text-anchor="end">1.0%</text>
+<text class="des" x="340" y="272">libc: dirent decode</text>
 <rect x="60" y="288" width="14" height="14" fill="#a8cdbe" rx="2"/>
-<text class="row" x="82" y="300">__psynch_cvwait</text>
-<text class="pct" x="320" y="300" text-anchor="end">0.4%</text>
-<text class="des" x="340" y="300">Parker idle wait</text>
+<text class="row" x="82" y="300">pthread_mutex_unlock</text>
+<text class="pct" x="320" y="300" text-anchor="end">0.5%</text>
+<text class="des" x="340" y="300">stdout flush</text>
 <rect x="60" y="316" width="14" height="14" fill="#c5dad0" rx="2"/>
 <text class="row" x="82" y="328">other</text>
-<text class="pct" x="320" y="328" text-anchor="end">6.5%</text>
+<text class="pct" x="320" y="328" text-anchor="end">8.1%</text>
 <text class="des" x="340" y="328">long tail of mallocs, system calls</text>
 </svg>

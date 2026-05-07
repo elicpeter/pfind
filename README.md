@@ -2,31 +2,33 @@
 
 A parallel directory walker tuned for macOS APFS. On a synthetic
 million-file tree it returns the same paths as `fd -t f` while
-spending roughly one third of the wall time and one twentieth of the
-kernel time. It uses two worker threads.
+spending roughly one fifth of the wall time and one fifth of the
+kernel time. It uses four worker threads.
 
 This repository contains the source, a reproducible benchmark harness,
 and the measurements that motivated the design choices.
 
 ## Headline numbers
 
-One-million-file tree, hyperfine 8 runs, 2 warmups, idle system.
+One-million-file tree, hyperfine 10 runs, 3 warmups, idle system.
 
 | scenario        |   pfind |     bfs |       fd |       rg |
 |-----------------|--------:|--------:|---------:|---------:|
-| all_files       |  307 ms |  482 ms |  1054 ms |  1077 ms |
-| extension_jpg   |  308 ms |  623 ms |  1017 ms |  1038 ms |
-| extension_multi |  310 ms |  761 ms |  1020 ms |  1032 ms |
-| name_glob       |  314 ms |  531 ms |   723 ms |   838 ms |
-| count_only      |  297 ms |  534 ms |  1069 ms |  1050 ms |
+| all_files       |  219 ms |  486 ms |  1074 ms |  1080 ms |
+| extension_jpg   |  220 ms |  626 ms |  1058 ms |  1023 ms |
+| extension_multi |  222 ms |  755 ms |  1045 ms |  1032 ms |
+| name_glob       |  225 ms |  542 ms |  1064 ms |   891 ms |
+| count_only      |  211 ms |  477 ms |   995 ms |   972 ms |
 
-![Wall time on the 1M tree, all five scenarios, all four tools](assets/bench-large.svg)
+![Wall time on the 1M tree, all five scenarios, five tools incl find](assets/bench-large.svg)
 
-Across small (10K), medium (100K), and large (1M) datasets, pfind has
-the lowest mean wall time in every scenario. The smallest gap to the
-nearest competitor (always `bfs`) is 1.57x, on `all_files / large`.
-On `count_only / large` pfind is 3.60x faster than `fd`. Counts match
-`fd --no-ignore --hidden` exactly at every cell.
+Across small (10K), medium (100K), large (1M), deep (363 nested dirs),
+and wide (2,000 dirs depth-1) datasets, pfind has the lowest mean wall
+time in every scenario × size cell. The smallest gap to the nearest
+competitor (always `bfs`) is 1.40x on `extension_jpg / deep`; on flat
+trees the floor lifts to 1.74x (`all_files / small`) and most cells
+exceed 2x. On `count_only / large` pfind is 4.71x faster than `fd`.
+Counts match `fd --no-ignore --hidden` exactly at every cell.
 
 ## Why it is fast
 
@@ -41,17 +43,20 @@ walker that issues twelve concurrent reads against the same volume
 spends most of its time queueing inside the kernel and burns the rest
 on `swtch_pri` waking the losers. Sweeping the worker count `j` from
 one to twelve on a 100K tree produces a U-shaped curve with a clear
-minimum at two:
+minimum at four:
 
 ![Thread sweep on 100K tree, all_files](assets/thread-sweep.svg)
 
-Two workers is enough to overlap one in-flight `getdirentries` with
-the user-space work for the previous one (path formatting,
-`extend_from_slice` into the output buffer, atomic counter updates).
-A third worker sits on the volume lock and the wins from extra
-parallelism are erased by the context switch.
+Four workers is the empirical sweet spot: enough to overlap several
+in-flight `getdirentries` with the user-space work for the previous
+ones (path formatting, `extend_from_slice` into the output buffer,
+atomic counter updates) and enough to keep the lock-holder pipeline
+full. A fifth worker is pure overhead — it sits on the volume lock
+and the wins are erased by park/unpark plus the kernel's context
+switch. j=4 is 1.21–1.55× faster than j=2 across every cell of the
+benchmark, and j=6 regresses sharply.
 
-`pfind` defaults to `-j 2` on macOS for this reason. Linux uses
+`pfind` defaults to `-j 4` on macOS for this reason. Linux uses
 finer-grained per-inode locking and the default falls back to
 `num_cpus` there.
 
@@ -84,7 +89,7 @@ A `samply` profile of a default run on the 100K tree, sampled at
 
 ![Leaf time breakdown of a default pfind run](assets/profile-leaf.svg)
 
-About 78 percent of the wall is the kernel walking dentries. That is
+About 76 percent of the wall is the kernel walking dentries. That is
 the floor on macOS without `getattrlistbulk`, which would only help
 if the workload also needed file size or `mtime`. The 9 percent in
 `_platform_memmove` is the cost of materialising output: every match
@@ -92,7 +97,9 @@ copies the directory path, a separator, and the filename into a
 per-thread `Vec<u8>` that flushes to stdout at 256 KiB. Reducing that
 copy would need `writev` with per-directory `iovec` batches sharing
 a single pointer to the directory prefix; the saving ceiling is the
-nine percent shown above.
+nine percent shown above. Investigated in round 2 and shelved: in
+pipe-bound benchmarks the consumer-side rate dominates wall time, so
+the userland copy is not on the critical path.
 
 ## Approach in detail
 
@@ -183,14 +190,23 @@ atomic load and a return.
 
 ### Datasets
 
-Three sizes, generated once and cached at
-`/tmp/pfind_ds/{small,medium,large}` with a fixed PRNG seed:
+Five shapes, generated once and cached at
+`/tmp/pfind_ds/{small,medium,large,deep,wide}` with a fixed PRNG seed:
 
-| name   | layout              | total files |
-|--------|---------------------|------------:|
-| small  | 100 dirs x 100      |      10,000 |
-| medium | 100 dirs x 1,000    |     100,000 |
-| large  | 1,000 dirs x 1,000  |   1,000,000 |
+| name   | layout                        | total files |
+|--------|-------------------------------|------------:|
+| small  | 100 dirs x 100 files          |      10,000 |
+| medium | 100 dirs x 1,000 files        |     100,000 |
+| large  | 1,000 dirs x 1,000 files      |   1,000,000 |
+| deep   | branching 3, depth 5, 20/dir  |       7,260 |
+| wide   | 2,000 dirs x 50 files         |     100,000 |
+
+`deep` and `wide` stress the work-stealing pool on non-uniform layouts:
+`deep` exposes pool startup cost on a tree small enough that 363
+sequential `opendir`+`getdirentries` pairs dominate wall time, and
+`wide` is the work-stealing pool's best case (one producer at the
+root pushes 2,000 children at once and three peers steal-load them
+in parallel).
 
 Filenames follow `file_NNNNNN.ext`, with `ext` drawn from `{jpg, png,
 txt, json, py, bin}` at fixed weights (40, 30, 10, 10, 5, 5 percent).
@@ -210,9 +226,11 @@ gitignore-aware filtering so their counts match `pfind`'s. Without
 these flags the correctness table would never reach `+0` parity on a
 tree containing a `.gitignore`.
 
-The benchmark previously included GNU `find`. It was removed because
-BSD/GNU `find` is roughly an order of magnitude slower than `bfs` on
-the same inputs and added wall time without changing the ranking.
+GNU `find` is included in the headline chart for context — it is
+roughly an order of magnitude slower than `bfs` on the same inputs
+and 23x slower than `pfind` on `count_only / large` — but is excluded
+from the per-cell hyperfine harness because its wall time inflates a
+full sweep without changing the ranking.
 
 ### Timing
 
@@ -226,11 +244,11 @@ stdout and counts lines for the correctness table.
 1. Correctness: every scenario at every size returns the same file
    count as `fd --no-ignore --hidden`.
 2. Performance: `pfind` has the lowest mean wall time in every
-   scenario at every size, by at least five percent over the
-   runner-up.
+   scenario × size cell, by at least five percent over the runner-up.
 
-Both criteria hold for the published binary. The full per-cell
-distributions are stored in `optimized.json`.
+Both criteria hold for the published binary across all 25 cells
+(5 scenarios × 5 dataset shapes). The full per-cell distributions
+are stored in `optimized.json`.
 
 ### Hardware
 
@@ -281,15 +299,15 @@ The full CLI is documented under `--help`.
 cargo build --release
 python3 benchmark.py \
     --pfind ./target/release/pfind \
-    --sizes small medium large \
-    --runs 8 --warmup 2 \
-    --output check.json --skip-oswalk
+    --sizes small medium large deep wide \
+    --runs 10 --warmup 3 \
+    --output optimized.json --skip-oswalk
 ```
 
 The script generates the dataset trees if they do not already exist,
 runs each tool through `hyperfine`, prints the per-scenario table
 and a correctness comparison, and writes a JSON report. A full run
-takes around four minutes on the reference hardware, of which
+takes around six minutes on the reference hardware, of which
 roughly seventy seconds is generating the 1M file tree on first
 invocation.
 

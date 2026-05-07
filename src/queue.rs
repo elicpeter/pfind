@@ -28,7 +28,6 @@ pub struct Pool<T: Send> {
   parked_count: AtomicUsize,
   dir_pending: AtomicUsize,
   shutdown: AtomicBool,
-  num_workers: usize,
 }
 
 impl<T: Send> Pool<T> {
@@ -58,7 +57,6 @@ impl<T: Send> Pool<T> {
       parked_count: AtomicUsize::new(0),
       dir_pending: AtomicUsize::new(0),
       shutdown: AtomicBool::new(false),
-      num_workers: n,
     };
     (pool, workers, parkers)
   }
@@ -78,7 +76,12 @@ impl<T: Send> Pool<T> {
   }
 
   /// Wake parked workers if any exist. Cheap fast-path when nobody is
-  /// parked (steady-state during the bulk of a walk).
+  /// parked (steady-state during the bulk of a walk). Broadcasts to
+  /// every unparker; an attempted round-robin selective wake regressed
+  /// `wide` by 1.17× because the cursor sometimes landed on an active
+  /// worker (a no-op unpark) and missed a parked one. At the j=4
+  /// default the broadcast is 4 cheap unparks per push and parker
+  /// permits coalesce wakes that happen during steady-state walks.
   #[inline]
   pub fn maybe_unpark(&self) {
     if self.parked_count.load(Ordering::Acquire) > 0 {
@@ -133,12 +136,12 @@ pub fn worker_loop<T, F>(
       continue;
     }
 
-    // 2. Steal sweep — give every peer one chance.
-    for _ in 0..pool.num_workers {
-      if let Some(t) = pool.try_steal(id) {
-        walk(t, local);
-        continue 'outer;
-      }
+    // 2. Steal sweep. `try_steal` already iterates every peer once
+    //    and resolves Steal::Retry internally, so a single call
+    //    suffices.
+    if let Some(t) = pool.try_steal(id) {
+      walk(t, local);
+      continue 'outer;
     }
 
     // 3. About to park: announce, then re-check work. The SeqCst

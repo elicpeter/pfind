@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 380" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Helvetica Neue', sans-serif" font-size="12">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 440" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Helvetica Neue', sans-serif" font-size="12">
 <defs>
   <style>
     .bg   {fill:#fbfbf8;}
@@ -11,78 +11,91 @@
     .sub  {fill:#666; font-size:11px;}
     .leg  {fill:#222; font-size:12px;}
     .val  {fill:#222; font-size:9.5px;}
+    .clip {fill:#5a3a3a; font-size:9.5px; font-weight:600;}
   </style>
 </defs>
-<rect class="bg" x="0" y="0" width="880" height="380"/>
-<rect class="frame" x="0.5" y="0.5" width="879" height="379"/>
-<text class="ttl" x="440.0" y="24" text-anchor="middle">Wall time, milliseconds, lower is better</text>
-<text class="sub" x="440.0" y="40" text-anchor="middle">1,000,000 file synthetic tree, hyperfine 8 runs warmup 2, M2 Max, APFS</text>
-<line class="grid" x1="60" y1="310.0" x2="850" y2="310.0"/>
-<text class="tick" x="52" y="314.0" text-anchor="end">0</text>
-<line class="grid" x1="60" y1="268.3" x2="850" y2="268.3"/>
-<text class="tick" x="52" y="272.3" text-anchor="end">200</text>
-<line class="grid" x1="60" y1="226.7" x2="850" y2="226.7"/>
-<text class="tick" x="52" y="230.7" text-anchor="end">400</text>
-<line class="grid" x1="60" y1="185.0" x2="850" y2="185.0"/>
-<text class="tick" x="52" y="189.0" text-anchor="end">600</text>
-<line class="grid" x1="60" y1="143.3" x2="850" y2="143.3"/>
-<text class="tick" x="52" y="147.3" text-anchor="end">800</text>
-<line class="grid" x1="60" y1="101.7" x2="850" y2="101.7"/>
-<text class="tick" x="52" y="105.7" text-anchor="end">1000</text>
-<line class="grid" x1="60" y1="60.0" x2="850" y2="60.0"/>
-<text class="tick" x="52" y="64.0" text-anchor="end">1200</text>
-<line class="axis" x1="60" y1="310" x2="850" y2="310"/>
-<rect x="81.0" y="246.0" width="26" height="64.0" fill="#0f5f36" rx="2"/>
-<text class="val" x="94.0" y="242.0" text-anchor="middle">307</text>
-<rect x="111.0" y="209.6" width="26" height="100.4" fill="#4f6a82" rx="2"/>
-<text class="val" x="124.0" y="205.6" text-anchor="middle">482</text>
-<rect x="141.0" y="90.4" width="26" height="219.6" fill="#a07338" rx="2"/>
-<text class="val" x="154.0" y="86.4" text-anchor="middle">1054</text>
-<rect x="171.0" y="85.6" width="26" height="224.4" fill="#7a4862" rx="2"/>
-<text class="val" x="184.0" y="81.6" text-anchor="middle">1077</text>
-<text class="scen" x="139.0" y="328.0" text-anchor="middle">all_files</text>
-<rect x="239.0" y="245.8" width="26" height="64.2" fill="#0f5f36" rx="2"/>
-<text class="val" x="252.0" y="241.8" text-anchor="middle">308</text>
-<rect x="269.0" y="180.2" width="26" height="129.8" fill="#4f6a82" rx="2"/>
-<text class="val" x="282.0" y="176.2" text-anchor="middle">623</text>
-<rect x="299.0" y="98.1" width="26" height="211.9" fill="#a07338" rx="2"/>
-<text class="val" x="312.0" y="94.1" text-anchor="middle">1017</text>
-<rect x="329.0" y="93.8" width="26" height="216.2" fill="#7a4862" rx="2"/>
-<text class="val" x="342.0" y="89.8" text-anchor="middle">1038</text>
-<text class="scen" x="297.0" y="328.0" text-anchor="middle">extension_jpg</text>
-<rect x="397.0" y="245.4" width="26" height="64.6" fill="#0f5f36" rx="2"/>
-<text class="val" x="410.0" y="241.4" text-anchor="middle">310</text>
-<rect x="427.0" y="151.5" width="26" height="158.5" fill="#4f6a82" rx="2"/>
-<text class="val" x="440.0" y="147.5" text-anchor="middle">761</text>
-<rect x="457.0" y="97.5" width="26" height="212.5" fill="#a07338" rx="2"/>
-<text class="val" x="470.0" y="93.5" text-anchor="middle">1020</text>
-<rect x="487.0" y="95.0" width="26" height="215.0" fill="#7a4862" rx="2"/>
-<text class="val" x="500.0" y="91.0" text-anchor="middle">1032</text>
-<text class="scen" x="455.0" y="328.0" text-anchor="middle">extension_multi</text>
-<rect x="555.0" y="244.6" width="26" height="65.4" fill="#0f5f36" rx="2"/>
-<text class="val" x="568.0" y="240.6" text-anchor="middle">314</text>
-<rect x="585.0" y="199.4" width="26" height="110.6" fill="#4f6a82" rx="2"/>
-<text class="val" x="598.0" y="195.4" text-anchor="middle">531</text>
-<rect x="615.0" y="159.4" width="26" height="150.6" fill="#a07338" rx="2"/>
-<text class="val" x="628.0" y="155.4" text-anchor="middle">723</text>
-<rect x="645.0" y="135.4" width="26" height="174.6" fill="#7a4862" rx="2"/>
-<text class="val" x="658.0" y="131.4" text-anchor="middle">838</text>
-<text class="scen" x="613.0" y="328.0" text-anchor="middle">name_glob</text>
-<rect x="713.0" y="248.1" width="26" height="61.9" fill="#0f5f36" rx="2"/>
-<text class="val" x="726.0" y="244.1" text-anchor="middle">297</text>
-<rect x="743.0" y="198.8" width="26" height="111.2" fill="#4f6a82" rx="2"/>
-<text class="val" x="756.0" y="194.8" text-anchor="middle">534</text>
-<rect x="773.0" y="87.3" width="26" height="222.7" fill="#a07338" rx="2"/>
-<text class="val" x="786.0" y="83.3" text-anchor="middle">1069</text>
-<rect x="803.0" y="91.2" width="26" height="218.8" fill="#7a4862" rx="2"/>
-<text class="val" x="816.0" y="87.2" text-anchor="middle">1050</text>
-<text class="scen" x="771.0" y="328.0" text-anchor="middle">count_only</text>
-<rect x="620" y="50" width="12" height="12" fill="#0f5f36" rx="2"/>
-<text class="leg" x="636" y="60">pfind</text>
-<rect x="678" y="50" width="12" height="12" fill="#4f6a82" rx="2"/>
-<text class="leg" x="694" y="60">bfs</text>
-<rect x="736" y="50" width="12" height="12" fill="#a07338" rx="2"/>
-<text class="leg" x="752" y="60">fd</text>
-<rect x="794" y="50" width="12" height="12" fill="#7a4862" rx="2"/>
-<text class="leg" x="810" y="60">rg</text>
+<rect class="bg" x="0" y="0" width="920" height="440"/>
+<rect class="frame" x="0.5" y="0.5" width="919" height="439"/>
+<text class="ttl" x="460.0" y="24" text-anchor="middle">Wall time, milliseconds, lower is better</text>
+<text class="sub" x="460.0" y="40" text-anchor="middle">1,000,000 file synthetic tree, hyperfine 10 runs warmup 3, M2 Max, APFS</text>
+<line class="grid" x1="60" y1="350.0" x2="890" y2="350.0"/>
+<text class="tick" x="52" y="354.0" text-anchor="end">0</text>
+<line class="grid" x1="60" y1="303.3" x2="890" y2="303.3"/>
+<text class="tick" x="52" y="307.3" text-anchor="end">200</text>
+<line class="grid" x1="60" y1="256.7" x2="890" y2="256.7"/>
+<text class="tick" x="52" y="260.7" text-anchor="end">400</text>
+<line class="grid" x1="60" y1="210.0" x2="890" y2="210.0"/>
+<text class="tick" x="52" y="214.0" text-anchor="end">600</text>
+<line class="grid" x1="60" y1="163.3" x2="890" y2="163.3"/>
+<text class="tick" x="52" y="167.3" text-anchor="end">800</text>
+<line class="grid" x1="60" y1="116.7" x2="890" y2="116.7"/>
+<text class="tick" x="52" y="120.7" text-anchor="end">1000</text>
+<line class="grid" x1="60" y1="70.0" x2="890" y2="70.0"/>
+<text class="tick" x="52" y="74.0" text-anchor="end">1200</text>
+<line class="axis" x1="60" y1="350" x2="890" y2="350"/>
+<rect x="82.0" y="298.9" width="22" height="51.1" fill="#0f5f36" rx="2"/>
+<text class="val" x="93.0" y="294.9" text-anchor="middle">219</text>
+<rect x="107.0" y="236.6" width="22" height="113.4" fill="#4f6a82" rx="2"/>
+<text class="val" x="118.0" y="232.6" text-anchor="middle">486</text>
+<rect x="132.0" y="99.4" width="22" height="250.6" fill="#a07338" rx="2"/>
+<text class="val" x="143.0" y="95.4" text-anchor="middle">1074</text>
+<rect x="157.0" y="98.0" width="22" height="252.0" fill="#7a4862" rx="2"/>
+<text class="val" x="168.0" y="94.0" text-anchor="middle">1080</text>
+<rect x="182.0" y="70.0" width="22" height="280.0" fill="#5a3a3a" rx="2"/>
+<text class="clip" x="193.0" y="67.0" text-anchor="middle">5153</text>
+<text class="scen" x="143.0" y="368.0" text-anchor="middle">all_files</text>
+<rect x="248.0" y="298.7" width="22" height="51.3" fill="#0f5f36" rx="2"/>
+<text class="val" x="259.0" y="294.7" text-anchor="middle">220</text>
+<rect x="273.0" y="203.9" width="22" height="146.1" fill="#4f6a82" rx="2"/>
+<text class="val" x="284.0" y="199.9" text-anchor="middle">626</text>
+<rect x="298.0" y="103.1" width="22" height="246.9" fill="#a07338" rx="2"/>
+<text class="val" x="309.0" y="99.1" text-anchor="middle">1058</text>
+<rect x="323.0" y="111.3" width="22" height="238.7" fill="#7a4862" rx="2"/>
+<text class="val" x="334.0" y="107.3" text-anchor="middle">1023</text>
+<rect x="348.0" y="70.0" width="22" height="280.0" fill="#5a3a3a" rx="2"/>
+<text class="clip" x="359.0" y="67.0" text-anchor="middle">5153</text>
+<text class="scen" x="309.0" y="368.0" text-anchor="middle">extension_jpg</text>
+<rect x="414.0" y="298.2" width="22" height="51.8" fill="#0f5f36" rx="2"/>
+<text class="val" x="425.0" y="294.2" text-anchor="middle">222</text>
+<rect x="439.0" y="173.8" width="22" height="176.2" fill="#4f6a82" rx="2"/>
+<text class="val" x="450.0" y="169.8" text-anchor="middle">755</text>
+<rect x="464.0" y="106.2" width="22" height="243.8" fill="#a07338" rx="2"/>
+<text class="val" x="475.0" y="102.2" text-anchor="middle">1045</text>
+<rect x="489.0" y="109.2" width="22" height="240.8" fill="#7a4862" rx="2"/>
+<text class="val" x="500.0" y="105.2" text-anchor="middle">1032</text>
+<rect x="514.0" y="70.0" width="22" height="280.0" fill="#5a3a3a" rx="2"/>
+<text class="clip" x="525.0" y="67.0" text-anchor="middle">5153</text>
+<text class="scen" x="475.0" y="368.0" text-anchor="middle">extension_multi</text>
+<rect x="580.0" y="297.5" width="22" height="52.5" fill="#0f5f36" rx="2"/>
+<text class="val" x="591.0" y="293.5" text-anchor="middle">225</text>
+<rect x="605.0" y="223.5" width="22" height="126.5" fill="#4f6a82" rx="2"/>
+<text class="val" x="616.0" y="219.5" text-anchor="middle">542</text>
+<rect x="630.0" y="101.7" width="22" height="248.3" fill="#a07338" rx="2"/>
+<text class="val" x="641.0" y="97.7" text-anchor="middle">1064</text>
+<rect x="655.0" y="142.1" width="22" height="207.9" fill="#7a4862" rx="2"/>
+<text class="val" x="666.0" y="138.1" text-anchor="middle">891</text>
+<rect x="680.0" y="70.0" width="22" height="280.0" fill="#5a3a3a" rx="2"/>
+<text class="clip" x="691.0" y="67.0" text-anchor="middle">5153</text>
+<text class="scen" x="641.0" y="368.0" text-anchor="middle">name_glob</text>
+<rect x="746.0" y="300.8" width="22" height="49.2" fill="#0f5f36" rx="2"/>
+<text class="val" x="757.0" y="296.8" text-anchor="middle">211</text>
+<rect x="771.0" y="238.7" width="22" height="111.3" fill="#4f6a82" rx="2"/>
+<text class="val" x="782.0" y="234.7" text-anchor="middle">477</text>
+<rect x="796.0" y="117.8" width="22" height="232.2" fill="#a07338" rx="2"/>
+<text class="val" x="807.0" y="113.8" text-anchor="middle">995</text>
+<rect x="821.0" y="123.2" width="22" height="226.8" fill="#7a4862" rx="2"/>
+<text class="val" x="832.0" y="119.2" text-anchor="middle">972</text>
+<rect x="846.0" y="70.0" width="22" height="280.0" fill="#5a3a3a" rx="2"/>
+<text class="clip" x="857.0" y="67.0" text-anchor="middle">5153</text>
+<text class="scen" x="807.0" y="368.0" text-anchor="middle">count_only</text>
+<rect x="285.0" y="398" width="12" height="12" fill="#0f5f36" rx="2"/>
+<text class="leg" x="301.0" y="408">pfind</text>
+<rect x="355.0" y="398" width="12" height="12" fill="#4f6a82" rx="2"/>
+<text class="leg" x="371.0" y="408">bfs</text>
+<rect x="425.0" y="398" width="12" height="12" fill="#a07338" rx="2"/>
+<text class="leg" x="441.0" y="408">fd</text>
+<rect x="495.0" y="398" width="12" height="12" fill="#7a4862" rx="2"/>
+<text class="leg" x="511.0" y="408">rg</text>
+<rect x="565.0" y="398" width="12" height="12" fill="#5a3a3a" rx="2"/>
+<text class="leg" x="581.0" y="408">find</text>
 </svg>
