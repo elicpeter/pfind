@@ -4,7 +4,8 @@
 pub struct Config {
   /// Number of worker threads in the pool.
   ///
-  /// If `None`, defaults to `num_cpus::get()`.
+  /// If `None`, defaults to `2` on macOS (the APFS volume lock makes
+  /// more workers worse) and `num_cpus::get()` on other platforms.
   pub num_threads: Option<usize>,
 
   /// Initial capacity hint for the per-worker child-dir scratch Vec.

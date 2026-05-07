@@ -272,8 +272,19 @@ fn flush_out(buf: &mut Vec<u8>) {
   }
   let stdout = std::io::stdout();
   let mut h = stdout.lock();
-  let _ = h.write_all(buf);
-  buf.clear();
+  match h.write_all(buf) {
+    Ok(()) => buf.clear(),
+    // Downstream pipe closed (e.g. `pfind ... | head`). Stop walking
+    // immediately rather than burning syscalls producing output that
+    // nobody will read. Match fd/rg/bfs behaviour.
+    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+      std::process::exit(0);
+    }
+    Err(e) => {
+      eprintln!("pfind: write error: {e}");
+      std::process::exit(1);
+    }
+  }
 }
 
 fn should_skip_dir_bytes(name: &[u8], filter: &FilterConfig) -> bool {

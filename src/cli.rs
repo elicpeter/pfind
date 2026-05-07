@@ -55,22 +55,6 @@ pub struct Cli {
   #[arg(short = 'j', long)]
   pub threads: Option<usize>,
 
-  /// Use depth-first traversal (better for deep trees)
-  #[arg(long, conflicts_with = "breadth_first")]
-  pub depth_first: bool,
-
-  /// Use breadth-first traversal (better for wide trees)
-  #[arg(long, conflicts_with = "depth_first")]
-  pub breadth_first: bool,
-
-  /// Use LIFO stack for work queue (unbounded)
-  #[arg(long, conflicts_with = "queue")]
-  pub stack: bool,
-
-  /// Use FIFO queue for work queue (bounded)
-  #[arg(long, conflicts_with = "stack")]
-  pub queue: bool,
-
   /// Print matching directories instead of files
   #[arg(short = 'd', long)]
   pub dirs: bool,

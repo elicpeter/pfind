@@ -61,6 +61,10 @@ DATASET_SIZES: dict[str, DatasetConfig] = {
     "large":  DatasetConfig("large",  1000,  1000),                 # 1M
     "deep":   DatasetConfig("deep",   100,   100, depth=5),         # nested
     "wide":   DatasetConfig("wide",   2000,  50),                   # very flat
+    # Skewed: 10 huge dirs (5000 files each) plus 500 tiny dirs (10 files
+    # each). Stresses work-stealing because huge dirs dwarf tiny ones.
+    # Encoded as num_dirs=510 sentinel; dataset gen routes by name.
+    "skewed": DatasetConfig("skewed", 510,    100),                 # ~55K
 }
 
 EXTENSIONS = ["jpg", "png", "txt", "json", "py", "bin"]
@@ -125,19 +129,29 @@ def create_dataset(root: Path, config: DatasetConfig, verbose: bool = True) -> d
             extension_counts[ext] += 1
             file_count[0] += 1
 
-    if config.depth == 1:
+    if config.name == "skewed":
+        for i in range(10):
+            make_files(root / f"huge_{i:02d}", 5000)
+        for i in range(500):
+            make_files(root / f"tiny_{i:04d}", 10)
+    elif config.depth == 1:
         for i in range(config.num_dirs):
             make_files(root / f"dir_{i:04d}", config.files_per_dir)
     else:
-        dirs_per_level = max(1, config.num_dirs // config.depth)
-        files_per_level = max(1, config.files_per_dir // config.depth)
+        # Bounded fanout. Old recurse spawned dirs_per_level**depth dirs
+        # (e.g. 20**5 = 3.2M dirs at depth=5), which generated tens of
+        # millions of files and never terminated. Branching is fixed
+        # small and each level adds 1/depth of the total file budget.
+        BRANCH = 3
+        levels = config.depth
+        files_per_dir = max(1, config.files_per_dir // levels)
 
         def recurse(base: Path, level: int) -> None:
-            if level >= config.depth:
+            if level >= levels:
                 return
-            for i in range(dirs_per_level):
-                d = base / f"L{level}_d{i:04d}"
-                make_files(d, files_per_level)
+            for i in range(BRANCH):
+                d = base / f"L{level}_d{i:02d}"
+                make_files(d, files_per_dir)
                 recurse(d, level + 1)
 
         recurse(root, 0)
@@ -328,16 +342,7 @@ def pfind_variants(pfind: Path, root: str, base_args: list[str], sweeps: set[str
     def cmd(extra: list[str]) -> list[str]:
         return [str(pfind), root, *base_args, *extra]
 
-    # Default (no sweep flags): single representative run.
     variants.append(("default", cmd([])))
-
-    if "backend" in sweeps:
-        variants.append(("queue", cmd(["--queue"])))
-        variants.append(("stack", cmd(["--stack"])))
-
-    if "order" in sweeps:
-        variants.append(("breadth-first", cmd(["--breadth-first"])))
-        variants.append(("depth-first", cmd(["--depth-first"])))
 
     if "threads" in sweeps:
         thread_counts = sorted({1, 2, 4, 8, max_threads})
@@ -611,7 +616,7 @@ def main() -> int:
     )
     p.add_argument("--sizes", nargs="+", choices=list(DATASET_SIZES), default=["small", "medium"])
     p.add_argument("--scenarios", nargs="+", choices=list(SCENARIOS), default=list(SCENARIOS))
-    p.add_argument("--sweeps", nargs="*", choices=["threads", "backend", "order"], default=[],
+    p.add_argument("--sweeps", nargs="*", choices=["threads"], default=[],
                    help="pfind-internal sweeps to run (in addition to default)")
     p.add_argument("--runs", type=int, default=5)
     p.add_argument("--warmup", type=int, default=1)
